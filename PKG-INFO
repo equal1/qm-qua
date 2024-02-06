@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: qm-qua
-Version: 1.1.6
+Version: 1.1.6+equal1
 Summary: QUA language SDK to control a Quantum Computer
 Author: Quantum Machines
 Author-email: info@quantum-machines.co
@@ -22,7 +22,7 @@ Requires-Dist: grpcio (>=1.39.0,<2.0.0) ; python_version >= "3.7" and python_ver
 Requires-Dist: grpcio (>=1.57,<2.0) ; python_version >= "3.11"
 Requires-Dist: grpclib (>=0.4.5,<0.5.0) ; python_version >= "3.10"
 Requires-Dist: httpx[http2] (>=0.23.3,<0.24.0)
-Requires-Dist: marshmallow (==3)
+Requires-Dist: marshmallow (>=3.0,<4.0)
 Requires-Dist: marshmallow-polyfield (>=5.7,<6.0)
 Requires-Dist: numpy (>=1.17.0,<2.0.0) ; python_version >= "3.7" and python_version < "3.11"
 Requires-Dist: numpy (>=1.24,<2.0) ; python_version >= "3.11"
