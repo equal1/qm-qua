@@ -4,7 +4,7 @@ Version: 1.1.7+equal1
 Summary: QUA language SDK to control a Quantum Computer
 Author: Quantum Machines
 Author-email: info@quantum-machines.co
-Requires-Python: >=3.8,<3.12
+Requires-Python: >=3.8,<3.13
 Classifier: Programming Language :: Python :: 3
 Classifier: Programming Language :: Python :: 3.8
 Classifier: Programming Language :: Python :: 3.9
@@ -12,7 +12,7 @@ Classifier: Programming Language :: Python :: 3.10
 Classifier: Programming Language :: Python :: 3.11
 Provides-Extra: simulation
 Requires-Dist: betterproto (==2.0.0b5) ; python_version >= "3.8" and python_version < "3.11"
-Requires-Dist: betterproto (==2.0.0b6) ; python_version == "3.11"
+Requires-Dist: betterproto (==2.0.0b6) ; python_version >= "3.11"
 Requires-Dist: certifi ; extra == "simulation"
 Requires-Dist: datadog-api-client (>=2.6.0,<3.0.0)
 Requires-Dist: dependency_injector (>=4.41.0,<5.0.0)
