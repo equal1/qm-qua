@@ -22,7 +22,7 @@ class SingleStreamingResultFetcher(BaseStreamingResultFetcher):
         super().wait_for_values(1, timeout)
 
     def fetch_all(
-        self, *, check_for_errors: bool = False, flat_struct: bool = False
+        self, *, check_for_errors: bool = True, flat_struct: bool = False
     ) -> Optional[numpy.typing.NDArray[numpy.generic]]:
         """Fetch a result from the current result stream saved in server memory.
         The result stream is populated by the save() and save_all() statements.
@@ -30,8 +30,9 @@ class SingleStreamingResultFetcher(BaseStreamingResultFetcher):
         may give different results.
 
         Args:
-            flat_struct: results will have a flat structure - dimensions
-                will be part of the shape and not of the type
+            check_for_errors: If true, the function would also check whether run-time errors happened during the
+                program execution and would write to the logger an error message.
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
 
         Returns:
             all result of current result stream
@@ -42,7 +43,7 @@ class SingleStreamingResultFetcher(BaseStreamingResultFetcher):
         self,
         item: Union[int, slice],
         *,
-        check_for_errors: bool = False,
+        check_for_errors: bool = True,
         flat_struct: bool = False,
     ) -> Optional[numpy.typing.NDArray[numpy.generic]]:
         """Fetch a single result from the current result stream saved in server memory.
@@ -50,8 +51,9 @@ class SingleStreamingResultFetcher(BaseStreamingResultFetcher):
 
         Args:
             item: ignored
-            flat_struct: results will have a flat structure - dimensions
-                will be part of the shape and not of the type
+            check_for_errors: If true, the function would also check whether run-time errors happened during the
+                program execution and would write to the logger an error message.
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
 
         Returns:
             the current result

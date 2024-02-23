@@ -49,7 +49,7 @@ def _get_numpy_array_from_proto_iteration_data(
     if name == "for_double_iteration_values":
         stop = round(stop, 9)
 
-    return np.arange(start=start, step=step, stop=stop)  # type: ignore[no-any-return]
+    return np.arange(start=start, step=step, stop=stop)
 
 
 def _get_stream_metadata_dict_from_proto_resp(

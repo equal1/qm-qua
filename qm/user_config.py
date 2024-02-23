@@ -1,9 +1,9 @@
 import os
 import json
 import uuid
-from typing_extensions import TypedDict
+import warnings
 from dataclasses import field, asdict, dataclass
-from typing import Any, Dict, Union, Optional, cast
+from typing import Any, Dict, Union, Optional, TypedDict, cast
 
 from qm.type_hinting.general import PathLike
 
@@ -85,6 +85,11 @@ class UserConfig:
 
     @property
     def datadog_handler_config(self) -> Dict[str, Any]:
+        warnings.warn("This property is deprecated, and will be removed in the next version", DeprecationWarning)
+        return self._datadog_handler_config
+
+    @property
+    def _datadog_handler_config(self) -> Dict[str, Any]:
         assert self.user_token, "No user token is defined"
         return {
             "class": "qm.datadog_api.DatadogHandler",
@@ -96,6 +101,7 @@ class UserConfig:
 
     @property
     def logging_config_dict(self) -> Dict[str, Any]:
+        warnings.warn("This property is deprecated, and will be removed in the next version", DeprecationWarning)
         default_formatter = "default"
         formatters = {default_formatter: {"format": self.default_logging_format}}
         handlers = {}
@@ -106,7 +112,7 @@ class UserConfig:
                 "stream": "ext://sys.stdout",
             }
         if self.upload_logs and self.datadog_token:
-            handlers["datadog"] = self.datadog_handler_config
+            handlers["datadog"] = self._datadog_handler_config
         return {
             "version": 1,
             "formatters": formatters,

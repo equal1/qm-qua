@@ -1,6 +1,5 @@
 import datetime
-from typing import List, Optional
-from typing_extensions import Protocol
+from typing import List, Optional, Protocol
 
 import betterproto
 

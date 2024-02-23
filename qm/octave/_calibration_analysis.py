@@ -273,10 +273,10 @@ def _get_and_analyze_image_data(
         g_plus = np.polyval([0.5, 1, 1], fit.y_min)
         g_minus = np.polyval([0.5, -1, 1], fit.y_min)
 
-        c00 = g_plus * c
-        c01 = g_plus * s
-        c10 = g_minus * s
-        c11 = g_minus * c
+        c00 = float(g_plus * c)
+        c01 = float(g_plus * s)
+        c10 = float(g_minus * s)
+        c11 = float(g_minus * c)
 
         results.append(
             ImageDataAnalysisResult(

@@ -4,13 +4,13 @@ import betterproto
 from octave_sdk.octave import RFInput, RFOutput
 from octave_sdk import Octave, OctaveOutput, OctaveLOSource
 
-from qm.octave.octave_config import get_device
 from qm.elements.element_inputs import MixInputs
+from qm.utils.config_utils import get_fem_config
 from qm.octave import CalibrationDB, QmOctaveConfig
 from qm.api.models.capabilities import ServerCapabilities
 from qm.octave.calibration_db import convert_to_correction
 from qm.elements.up_converted_input import UpconvertedInput
-from qm.octave.octave_manager import logger, get_loopbacks_from_pb
+from qm.octave.octave_manager import logger, get_device, get_loopbacks_from_pb
 from qm.exceptions import OctaveCableSwapError, OctaveConnectionError, ElementUpconverterDeclarationError
 from qm.grpc.qua_config import (
     QuaConfig,
@@ -57,8 +57,8 @@ class OctavesContainer:
                 raise OctaveCableSwapError()
 
             return self._octave_config.get_octave_input_port(
-                (element_i_port.controller, element_i_port.number),
-                (element_q_port.controller, element_q_port.number),
+                (element_i_port.controller, element_i_port.fem, element_i_port.number),
+                (element_q_port.controller, element_q_port.fem, element_q_port.number),
             )
         if i_conn != q_conn:
             raise ElementUpconverterDeclarationError()
@@ -102,8 +102,8 @@ class OctavesContainer:
             gain = self._pb_config.v1_beta.octaves[octave_name].rf_outputs[octave_port].gain
         except KeyError:
             logger.warning(
-                "No gain was specified, probably due to the usage of the old API, "
-                "setting gain to None, please don't forget to set it, or, better, to move to the new API"
+                "No gain was specified. Setting gain to None. "
+                "Please configure all the ports' gain values in the qua configuration"
             )
             gain = None
 
@@ -125,7 +125,10 @@ class OctavesContainer:
         device_connection_info = self._octave_config.devices[device_name]
         loopbacks = self._get_loopbacks(device_name)
         return get_device(
-            device_connection_info, loop_backs=loopbacks, octave_name=device_name, fan=self._octave_config.fan
+            device_connection_info,
+            loop_backs=loopbacks,
+            octave_name=device_name,
+            fan=self._octave_config.fan,
         )
 
 
@@ -155,8 +158,8 @@ def load_config_from_calibration_db(
             output_gain = pb_config.v1_beta.octaves[octave_channel[0]].rf_outputs[octave_channel[1]].gain
         except KeyError:
             logger.warning(
-                "No gain was specified, probably due to the usage of the old API, "
-                "please move to the new API and specify the gain"
+                "No gain was specified. Setting gain to None. "
+                "Please configure all the ports' gain values in the qua configuration"
             )
             output_gain = None
 
@@ -168,8 +171,15 @@ def load_config_from_calibration_db(
             continue
 
         i_port, q_port = mix_inputs.i, mix_inputs.q
-        pb_config.v1_beta.controllers[i_port.controller].analog_outputs[i_port.number].offset = lo_cal.i0
-        pb_config.v1_beta.controllers[q_port.controller].analog_outputs[q_port.number].offset = lo_cal.q0
+        i_controller_config = get_fem_config(pb_config, i_port)
+        i_controller_config.analog_outputs[i_port.number].offset = lo_cal.i0
+        q_controller_config = get_fem_config(pb_config, q_port)
+        q_controller_config.analog_outputs[q_port.number].offset = lo_cal.q0
+
+        if i_port.controller in pb_config.v1_beta.controllers:
+            pb_config.v1_beta.controllers[i_port.controller].analog_outputs[i_port.number].offset = lo_cal.i0
+        if q_port.controller in pb_config.v1_beta.controllers:
+            pb_config.v1_beta.controllers[q_port.controller].analog_outputs[q_port.number].offset = lo_cal.q0
 
         # Now we go over all the IF frequencies we find and set them. Not sure
         # when an IF frequency different from the element's 'intermediate_frequency'

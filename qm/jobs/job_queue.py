@@ -144,7 +144,7 @@ class QmQueue:
 
         job_id = self._frontend.add_to_queue(
             machine_id=self.machine_id,
-            program=program.build(self._config),
+            program=program.qua_program,
             compiler_options=compiler_options,
             insert_direction=insert_direction,
         )

@@ -1,7 +1,7 @@
 import ssl
 import warnings
 import dataclasses
-from typing import Dict, Optional
+from typing import Dict, Tuple, Optional
 
 from qm.utils import deprecation_message
 from qm.api.models.info import QuaMachineInfo
@@ -16,12 +16,33 @@ BASE_TIMEOUT = 60
 class ConnectionDetails:
     host: str
     port: int
-    user_token: Optional[str]
-    ssl_context: Optional[ssl.SSLContext]
+    user_token: Optional[str] = dataclasses.field(default=None)
+    ssl_context: Optional[ssl.SSLContext] = dataclasses.field(default=None)
     max_message_size: int = dataclasses.field(default=MAX_MESSAGE_SIZE)
     headers: Dict[str, str] = dataclasses.field(default_factory=dict)
     timeout: float = dataclasses.field(default=BASE_TIMEOUT)
     debug_data: Optional[DebugData] = dataclasses.field(default=None)
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.host,
+                self.port,
+                self.user_token,
+                self.ssl_context,
+                self.max_message_size,
+                tuple(sorted(self.headers.items())),
+                self.timeout,
+                self.debug_data,
+            )
+        )
+
+
+@dataclasses.dataclass
+class ResponseConnectionDetails:
+    host: str
+    port: int
+    octaves: Dict[str, Tuple[str, int]]
 
 
 @dataclasses.dataclass
@@ -30,6 +51,7 @@ class ServerDetails:
     host: str
     server_version: str
     connection_details: ConnectionDetails
+    octaves: Dict[str, ConnectionDetails]
 
     # does it implement the QUA service
     qua_implementation: Optional[QuaMachineInfo]

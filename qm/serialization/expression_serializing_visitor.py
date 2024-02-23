@@ -2,7 +2,33 @@ import betterproto
 
 from qm.grpc import qua
 from qm.exceptions import QmQuaException
+from qm.utils.protobuf_utils import Node
 from qm.serialization.qua_node_visitor import QuaNodeVisitor
+from qm.grpc.qua import (
+    QuaProgramRampPulse,
+    QuaProgramMeasureProcess,
+    QuaProgramBinaryExpression,
+    QuaProgramLiteralExpression,
+    QuaProgramAnyScalarExpression,
+    QuaProgramSaveStatementSource,
+    QuaProgramAnalogMeasureProcess,
+    QuaProgramArrayLengthExpression,
+    QuaProgramArrayVarRefExpression,
+    QuaProgramDigitalMeasureProcess,
+    QuaProgramArrayCellRefExpression,
+    QuaProgramAnalogTimeDivisionSliced,
+    QuaProgramAssignmentStatementTarget,
+    QuaProgramAnalogTimeDivisionAccumulated,
+    QuaProgramDigitalMeasureProcessCounting,
+    QuaProgramAnalogTimeDivisionMovingWindow,
+    QuaProgramAnalogProcessTargetTimeDivision,
+    QuaProgramAnalogMeasureProcessBareIntegration,
+    QuaProgramDigitalMeasureProcessRawTimeTagging,
+    QuaProgramAnalogMeasureProcessHighResTimeTagging,
+    QuaProgramAnalogProcessTargetScalarProcessTarget,
+    QuaProgramAnalogProcessTargetVectorProcessTarget,
+    QuaProgramAnalogMeasureProcessDualBareIntegration,
+)
 
 
 class ExpressionSerializingVisitor(QuaNodeVisitor):
@@ -10,14 +36,14 @@ class ExpressionSerializingVisitor(QuaNodeVisitor):
         self._out = ""
         super().__init__()
 
-    def _default_visit(self, node):
+    def _default_visit(self, node: Node) -> None:
         type_fullname = f"{type(node).__module__}.{type(node).__name__}"
         print(f"missing expression: {type_fullname}")
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramLibFunctionExpression(self, node: qua.QuaProgramLibFunctionExpression):
+    def visit_qm_grpc_qua_QuaProgramLibFunctionExpression(self, node: qua.QuaProgramLibFunctionExpression) -> None:
+        args = [ExpressionSerializingVisitor.serialize(arg) for arg in node.arguments]
         if node.library_name == "random":
-            args = [ExpressionSerializingVisitor.serialize(arg) for arg in node.arguments]
             self._out = f"call_library_function('{node.library_name}', '{node.function_name}', [{','.join(args)}])"
         else:
             library_name = {
@@ -70,91 +96,90 @@ class ExpressionSerializingVisitor(QuaNodeVisitor):
             if function_name is None:
                 raise Exception(f"Unsupported function name {node.function_name}")
 
-            args = [ExpressionSerializingVisitor.serialize(arg) for arg in node.arguments]
-
             self._out = f"{library_name}.{function_name}({','.join(args)})"
 
     def visit_qm_grpc_qua_QuaProgramLibFunctionExpressionArgument(
         self, node: qua.QuaProgramLibFunctionExpressionArgument
-    ):
+    ) -> None:
         name, value = betterproto.which_one_of(node, "argument_oneof")
         if value is not None and name in ("scalar", "array"):
             self._out = ExpressionSerializingVisitor.serialize(value)
         else:
             raise QmQuaException(f"Unknown library function argument {name}")
 
-    def visit_qm_grpc_qua_QuaProgramVarRefExpression(self, node: qua.QuaProgramVarRefExpression):
+    def visit_qm_grpc_qua_QuaProgramVarRefExpression(self, node: qua.QuaProgramVarRefExpression) -> None:
         self._out = node.name if node.name else f"IO{node.io_number}"
 
-    def visit_qm_grpc_qua_QuaProgramArrayVarRefExpression(self, node):
+    def visit_qm_grpc_qua_QuaProgramArrayVarRefExpression(self, node: QuaProgramArrayVarRefExpression) -> None:
         self._out = node.name
 
-    def visit_qm_grpc_qua_QuaProgramArrayCellRefExpression(self, node):
+    def visit_qm_grpc_qua_QuaProgramArrayCellRefExpression(self, node: QuaProgramArrayCellRefExpression) -> None:
         var = ExpressionSerializingVisitor.serialize(node.array_var)
         index = ExpressionSerializingVisitor.serialize(node.index)
         self._out = f"{var}[{index}]"
 
-    def visit_qm_grpc_qua_QuaProgramArrayLengthExpression(self, node):
+    def visit_qm_grpc_qua_QuaProgramArrayLengthExpression(self, node: QuaProgramArrayLengthExpression) -> None:
         self._out = f"{node.array.name}.length()"
 
-    def visit_qm_grpc_qua_QuaProgramLiteralExpression(self, node):
+    def visit_qm_grpc_qua_QuaProgramLiteralExpression(self, node: QuaProgramLiteralExpression) -> None:
         self._out = node.value
 
-    def visit_qm_grpc_qua_QuaProgramAssignmentStatementTarget(self, node):
+    def visit_qm_grpc_qua_QuaProgramAssignmentStatementTarget(self, node: QuaProgramAssignmentStatementTarget) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramRampPulse(self, node):
+    def visit_qm_grpc_qua_QuaProgramRampPulse(self, node: QuaProgramRampPulse) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramMeasureProcess(self, node):
+    def visit_qm_grpc_qua_QuaProgramMeasureProcess(self, node: QuaProgramMeasureProcess) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcess(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcess(self, node: QuaProgramAnalogMeasureProcess) -> None:
         super()._default_visit(node)
 
     def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessDemodIntegration(
         self, node: qua.QuaProgramAnalogMeasureProcessDemodIntegration
-    ):
+    ) -> None:
         name = node.integration.name
         output = node.element_output
         target_name, target_value = betterproto.which_one_of(node.target, "processTarget")
 
-        if target_name == "scalar_process":
+        if isinstance(target_value, QuaProgramAnalogProcessTargetScalarProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value)
             self._out = f'demod.full("{name}", {target}, "{output}")'
-        elif target_name == "vector_process":
-            target_value: qua.QuaProgramAnalogProcessTargetVectorProcessTarget
+        elif isinstance(target_value, QuaProgramAnalogProcessTargetVectorProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value.array)
 
             time_name, time_value = betterproto.which_one_of(target_value.time_division, "timeDivision")
-            if time_name == "sliced":
+            if isinstance(time_value, QuaProgramAnalogTimeDivisionSliced):
                 self._out = f'demod.sliced("{name}", {target}, {time_value.samples_per_chunk}, "{output}")'
-            elif time_name == "accumulated":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionAccumulated):
                 self._out = f'demod.accumulated("{name}", {target}, {time_value.samples_per_chunk}, "{output}")'
-            elif time_name == "moving_window":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionMovingWindow):
                 self._out = f'demod.moving_window("{name}", {target}, {time_value.samples_per_chunk}, {time_value.chunks_per_window}, "{output}")'
             else:
                 raise Exception(f"Unsupported analog process target {target_name}")
         else:
             raise Exception(f"Unsupported analog process target {target_name}")
 
-    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessBareIntegration(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessBareIntegration(
+        self, node: QuaProgramAnalogMeasureProcessBareIntegration
+    ) -> None:
         name = node.integration.name
         output = node.element_output
         target_name, target_value = betterproto.which_one_of(node.target, "processTarget")
 
-        if target_name == "scalar_process":
+        if isinstance(target_value, QuaProgramAnalogProcessTargetScalarProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value)
             self._out = f'integration.full("{name}", {target}, "{output}")'
-        elif target_name == "vector_process":
+        elif isinstance(target_value, QuaProgramAnalogProcessTargetVectorProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value.array)
 
             time_name, time_value = betterproto.which_one_of(target_value.time_division, "timeDivision")
-            if time_name == "sliced":
+            if isinstance(time_value, QuaProgramAnalogTimeDivisionSliced):
                 self._out = f'integration.sliced("{name}", {target}, {time_value.samples_per_chunk}, "{output}")'
-            elif time_name == "accumulated":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionAccumulated):
                 self._out = f'integration.accumulated("{name}", {target}, {time_value.samples_per_chunk}, "{output}")'
-            elif time_name == "moving_window":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionMovingWindow):
                 self._out = f'integration.moving_window("{name}", {target}, {time_value.samples_per_chunk}, {time_value.chunks_per_window}, "{output}")'
             else:
                 raise Exception(f"Unsupported analog process target {target_name}")
@@ -163,50 +188,52 @@ class ExpressionSerializingVisitor(QuaNodeVisitor):
 
     def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessDualDemodIntegration(
         self, node: qua.QuaProgramAnalogMeasureProcessDualDemodIntegration
-    ):
+    ) -> None:
         name1 = node.integration1.name
         name2 = node.integration2.name
         output1 = node.element_output1
         output2 = node.element_output2
         target_name, target_value = betterproto.which_one_of(node.target, "processTarget")
 
-        if target_name == "scalar_process":
+        if isinstance(target_value, QuaProgramAnalogProcessTargetScalarProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value)
             self._out = f'dual_demod.full("{name1}", "{output1}", "{name2}", "{output2}", {target})'
-        elif target_name == "vector_process":
+        elif isinstance(target_value, QuaProgramAnalogProcessTargetVectorProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value.array)
 
             time_name, time_value = betterproto.which_one_of(target_value.time_division, "timeDivision")
-            if time_name == "sliced":
+            if isinstance(time_value, QuaProgramAnalogTimeDivisionSliced):
                 self._out = f'dual_demod.sliced("{name1}", "{output1}", "{name2}", "{output2}", {time_value.samples_per_chunk}, {target})'
-            elif time_name == "accumulated":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionAccumulated):
                 self._out = f'dual_demod.accumulated("{name1}", "{output1}", "{name2}", "{output2}", {time_value.samples_per_chunk}, {target})'
-            elif time_name == "moving_window":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionMovingWindow):
                 self._out = f'dual_demod.moving_window("{name1}", "{output1}", "{name2}", "{output2}", {time_value.samples_per_chunk}, {time_value.chunks_per_window}, {target})'
             else:
                 raise Exception(f"Unsupported analog process target {time_name}")
         else:
             raise Exception(f"Unsupported analog process target {target_name}")
 
-    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessDualBareIntegration(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessDualBareIntegration(
+        self, node: QuaProgramAnalogMeasureProcessDualBareIntegration
+    ) -> None:
         name1 = node.integration1.name
         name2 = node.integration2.name
         output1 = node.element_output1
         output2 = node.element_output2
         target_name, target_value = betterproto.which_one_of(node.target, "processTarget")
 
-        if target_name == "scalar_process":
+        if isinstance(target_value, QuaProgramAnalogProcessTargetScalarProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value)
             self._out = f'dual_integration.full("{name1}", "{output1}", "{name2}", "{output2}", {target})'
-        elif target_name == "vector_process":
+        elif isinstance(target_value, QuaProgramAnalogProcessTargetVectorProcessTarget):
             target = ExpressionSerializingVisitor.serialize(target_value.array)
 
             time_name, time_value = betterproto.which_one_of(target_value.time_division, "timeDivision")
-            if time_name == "sliced":
+            if isinstance(time_value, QuaProgramAnalogTimeDivisionSliced):
                 self._out = f'dual_integration.sliced("{name1}", "{output1}", "{name2}", "{output2}", {time_value.samples_per_chunk}, {target})'
-            elif time_name == "accumulated":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionAccumulated):
                 self._out = f'dual_integration.accumulated("{name1}", "{output1}", "{name2}", "{output2}", {time_value.samples_per_chunk}, {target})'
-            elif time_name == "moving_window":
+            elif isinstance(time_value, QuaProgramAnalogTimeDivisionMovingWindow):
                 self._out = f'dual_integration.moving_window("{name1}", "{output1}", "{name2}", "{output2}", {time_value.samples_per_chunk}, {time_value.chunks_per_window}, {target})'
             else:
                 raise Exception(f"Unsupported analog process target {time_name}")
@@ -215,24 +242,28 @@ class ExpressionSerializingVisitor(QuaNodeVisitor):
 
     def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessRawTimeTagging(
         self, node: qua.QuaProgramAnalogMeasureProcessRawTimeTagging
-    ):
+    ) -> None:
         target = ExpressionSerializingVisitor.serialize(node.target)
         target_len = ExpressionSerializingVisitor.serialize(node.target_len)
         max_time = node.max_time
         element_output = node.element_output
         self._out = f'time_tagging.analog({target}, {max_time}, {target_len}, "{element_output}")'
 
-    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessHighResTimeTagging(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnalogMeasureProcessHighResTimeTagging(
+        self, node: QuaProgramAnalogMeasureProcessHighResTimeTagging
+    ) -> None:
         target = ExpressionSerializingVisitor.serialize(node.target)
         target_len = ExpressionSerializingVisitor.serialize(node.target_len)
         max_time = node.max_time
         element_output = node.element_output
         self._out = f'time_tagging.high_res({target}, {max_time}, {target_len}, "{element_output}")'
 
-    def visit_qm_grpc_qua_QuaProgramDigitalMeasureProcess(self, node):
+    def visit_qm_grpc_qua_QuaProgramDigitalMeasureProcess(self, node: QuaProgramDigitalMeasureProcess) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramDigitalMeasureProcessCounting(self, node):
+    def visit_qm_grpc_qua_QuaProgramDigitalMeasureProcessCounting(
+        self, node: QuaProgramDigitalMeasureProcessCounting
+    ) -> None:
         element_outputs = []
         for element_output in node.element_outputs:
             element_outputs.append(f'"{element_output}"')
@@ -241,26 +272,32 @@ class ExpressionSerializingVisitor(QuaNodeVisitor):
         max_time = node.max_time
         self._out = f"counting.digital({target}, {max_time}, ({element_outputs_str}))"
 
-    def visit_qm_grpc_qua_QuaProgramDigitalMeasureProcessRawTimeTagging(self, node):
+    def visit_qm_grpc_qua_QuaProgramDigitalMeasureProcessRawTimeTagging(
+        self, node: QuaProgramDigitalMeasureProcessRawTimeTagging
+    ) -> None:
         target = ExpressionSerializingVisitor.serialize(node.target)
         target_len = ExpressionSerializingVisitor.serialize(node.target_len)
         max_time = node.max_time
         element_output = node.element_output
         self._out = f'time_tagging.digital({target}, {max_time}, {target_len}, "{element_output}")'
 
-    def visit_qm_grpc_qua_QuaProgramAnalogProcessTargetScalarProcessTarget(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnalogProcessTargetScalarProcessTarget(
+        self, node: QuaProgramAnalogProcessTargetScalarProcessTarget
+    ) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramAnalogProcessTargetTimeDivision(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnalogProcessTargetTimeDivision(
+        self, node: QuaProgramAnalogProcessTargetTimeDivision
+    ) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramAnyScalarExpression(self, node):
+    def visit_qm_grpc_qua_QuaProgramAnyScalarExpression(self, node: QuaProgramAnyScalarExpression) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramSaveStatementSource(self, node):
+    def visit_qm_grpc_qua_QuaProgramSaveStatementSource(self, node: QuaProgramSaveStatementSource) -> None:
         super()._default_visit(node)
 
-    def visit_qm_grpc_qua_QuaProgramBinaryExpression(self, node):
+    def visit_qm_grpc_qua_QuaProgramBinaryExpression(self, node: QuaProgramBinaryExpression) -> None:
         left = ExpressionSerializingVisitor.serialize(node.left)
         right = ExpressionSerializingVisitor.serialize(node.right)
         sop = node.op
@@ -287,7 +324,7 @@ class ExpressionSerializingVisitor(QuaNodeVisitor):
         self._out = f"({left}{op}{right})"
 
     @staticmethod
-    def serialize(node) -> str:
+    def serialize(node: Node) -> str:
         visitor = ExpressionSerializingVisitor()
         visitor.visit(node)
         return visitor._out

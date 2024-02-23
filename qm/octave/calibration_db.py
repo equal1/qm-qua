@@ -22,10 +22,10 @@ def convert_to_correction(gain: float, phase: float) -> Correction:
     g_plus = np.polyval([0.5, 1, 1], gain)
     g_minus = np.polyval([0.5, -1, 1], gain)
 
-    c00 = g_plus * c
-    c01 = g_plus * s
-    c10 = g_minus * s
-    c11 = g_minus * c
+    c00 = float(g_plus * c)
+    c01 = float(g_plus * s)
+    c10 = float(g_minus * s)
+    c11 = float(g_minus * c)
 
     return c00, c01, c10, c11
 
@@ -173,7 +173,7 @@ class CalibrationDB:
         self,
         octave_channel: Tuple[str, int],
         lo_freq: float,
-        gain: float,
+        gain: Optional[float],
         i0: float,
         q0: float,
         dc_gain: float,
@@ -197,7 +197,7 @@ class CalibrationDB:
         self,
         octave_channel: Tuple[str, int],
         lo_freq: float,
-        output_gain: float,
+        output_gain: Optional[float],
         if_freq: float,
         gain: float,
         phase: float,

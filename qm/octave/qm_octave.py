@@ -62,7 +62,7 @@ class QmOctave:
             rf_input_index (RFInputRFSource): input index - can be 1 or 2
         """
         inst = self._qm._elements[element]
-        client = self._octave_manager._octave_clients[octave_name]
+        client = self._octave_manager.get_client(octave_name)
         rf_input_client = client.rf_inputs[rf_input_index]
         inst.output = DownconvertedOutput(rf_input_client)
 
@@ -270,6 +270,15 @@ class QmOctave:
     def set_element_parameters_from_calibration_db(
         self, element: str, running_job: Optional[RunningQmJob] = None
     ) -> None:
+        """Apply correction parameters to an element from the calibration database. The parameters will be selected
+        according to the current LO and IF frequencies in the configuration. Therefore, If used when sweeping the LO,
+        it is required to first set the new LO freq using qm.octave.set_lo_frequency() before updating the calibration
+        parameters.
+
+        Args:
+            element (str): The name of the element for setting the calibration parameters
+            running_job: Optional. If given, will update the element's parameters of the given running job
+        """
         qe = self._qm._elements[element]
         assert isinstance(qe.input, UpconvertedInput)
 

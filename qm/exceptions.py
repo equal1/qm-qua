@@ -13,6 +13,14 @@ class QmmException(QmQuaException):
     pass
 
 
+class OctaveConfigDeprecationException(QmmException):
+    def __init__(self) -> None:
+        super().__init__(
+            "Received a response from the QM-app that includes octaves, please remove the OctaveConfig "
+            "and move the configuration to the QUA-config."
+        )
+
+
 class OpenQmException(QmQuaException):
     def __init__(self, message: str, *args: Any, errors: List[Tuple[str, str, str]]):
         super().__init__(message, *args)
@@ -154,6 +162,11 @@ class OctaveConnectionError(QmQuaException):
     pass
 
 
+class OctaveLoopbackError(OctaveConnectionError):
+    def __init__(self) -> None:
+        super().__init__("lo loopback between different octave devices are not supported.")
+
+
 class OctaveCableSwapError(OctaveConnectionError):
     def __init__(self) -> None:
         super().__init__("Cable swap detected. Please check your connections.")
@@ -187,4 +200,16 @@ class InvalidOctaveParameter(ConfigValidationException):
 
 
 class ElementOutputConnectionAmbiguity(ConfigValidationException):
+    pass
+
+
+class QmRedirectionError(QmQuaException):
+    pass
+
+
+class QmLocationParsingError(QmQuaException):
+    pass
+
+
+class ElementInputConnectionAmbiguity(ConfigValidationException):
     pass

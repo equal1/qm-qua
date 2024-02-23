@@ -3,6 +3,7 @@ import logging
 import traceback
 from typing import Set, Dict, List, Tuple, Optional
 
+from qm.utils import SERVICE_HEADER_NAME
 from qm.utils.async_utils import run_async
 from qm.api.frontend_api import FrontendApi
 from qm.api.models.info import QuaMachineInfo
@@ -30,8 +31,8 @@ def detect_server(
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> ServerDetails:
     ports_to_try = _get_ports(port_from_user_config, user_provided_port)
-
-    headers = _create_headers(extra_headers or {}, cluster_name, user_token)
+    extra_headers = extra_headers or {}
+    headers = _create_headers(extra_headers, "gateway", cluster_name, user_token)
     errors: List[Tuple[str, str]] = []
 
     for port in ports_to_try:
@@ -51,7 +52,7 @@ def detect_server(
         )
 
         try:
-            connection_details = _redirect(connection_details)
+            connection_details, octaves = _redirect(connection_details)
             info, server_version = _connect(connection_details)
         except Exception as e:
             errors.append((dst, f"{e}\n{traceback.format_exc()}"))
@@ -68,30 +69,44 @@ def detect_server(
             server_version=server_version,
             qua_implementation=info,
             connection_details=connection_details,
+            octaves={
+                name: ConnectionDetails(
+                    octave_host, octave_port, headers=_create_headers(extra_headers, name, cluster_name, user_token)
+                )
+                for name, (octave_host, octave_port) in octaves.items()
+            },
         )
 
     targets = ",".join([f"{host}:{port}" for port in ports_to_try])
-    message = f"Failed to detect a QuantumMachines server. Tried connecting to {targets}."
+    cluster_str = f"cluster '{cluster_name}'" if cluster_name else "a cluster"
+    message = (
+        f"Failed to detect to QuantumMachines server, failed to connect to {cluster_str}. "
+        f"Tried connecting to {targets}."
+    )
     errors_msgs = "\n".join([f"{dst}: {error}" for dst, error in errors])
     logger.error(f"{message}\nErrors:\n{errors_msgs}.")
     raise QmServerDetectionError(message)
 
 
-def _redirect(connection_details: ConnectionDetails) -> ConnectionDetails:
-    host, port = run_async(
+def _redirect(connection_details: ConnectionDetails) -> Tuple[ConnectionDetails, Dict[str, Tuple[str, int]]]:
+    response_details = run_async(
         send_redirection_check(
             connection_details.host, connection_details.port, connection_details.headers, connection_details.timeout
         )
     )
-
-    if host != connection_details.host or port != connection_details.port:
+    octaves = {}
+    if response_details.host != connection_details.host or response_details.port != connection_details.port:
         logger.debug(
-            f"Connection redirected from '{connection_details.host}:{connection_details.port}' to '{host}:{port}'"
+            f"Connection redirected from '{connection_details.host}:{connection_details.port}' to "
+            f"'{response_details.host}:{response_details.port}'"
         )
-        connection_details.host = host
-        connection_details.port = port
+        connection_details.host = response_details.host
+        connection_details.port = response_details.port
+        octaves = response_details.octaves
+        if octaves:
+            logger.debug(f"Detected octaves: {octaves}")
 
-    return connection_details
+    return connection_details, octaves
 
 
 def _connect(
@@ -124,12 +139,11 @@ def _get_ports(port_from_config: Optional[int], user_provided_port: Optional[int
 
 
 def _create_headers(
-    base_headers: Dict[str, str], cluster_name: Optional[str], user_token: Optional[str]
+    base_headers: Dict[str, str], device_identity: str, cluster_name: Optional[str], user_token: Optional[str]
 ) -> Dict[str, str]:
     headers = {}
     headers.update(base_headers if base_headers is not None else {})
-
-    headers["x-grpc-service"] = "gateway"
+    headers[SERVICE_HEADER_NAME] = device_identity
     if user_token:
         headers["authorization"] = f"Bearer {user_token}"
     headers.update(_create_cluster_headers(cluster_name))

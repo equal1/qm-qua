@@ -1,5 +1,5 @@
-from qm.utils.general_utils import run_until_with_timeout
 from qm.utils.protobuf_utils import LOG_LEVEL_MAP, list_fields
+from qm.utils.general_utils import SERVICE_HEADER_NAME, run_until_with_timeout
 from qm.utils.deprecation_utils import deprecation_message, deprecate_to_property
 from qm.utils.types_utils import (
     is_iter,
@@ -24,4 +24,5 @@ __all__ = [
     "deprecation_message",
     "list_fields",
     "run_until_with_timeout",
+    "SERVICE_HEADER_NAME",
 ]

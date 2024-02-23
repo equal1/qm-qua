@@ -201,6 +201,7 @@ class HighQmApiRequestSetDigitalInputDeadtime(betterproto.Message):
 class DigitalInputPort(betterproto.Message):
     controller_name: str = betterproto.string_field(1)
     port_number: int = betterproto.uint32_field(2)
+    fem_number: int = betterproto.uint32_field(3)
 
 
 @dataclass(eq=False, repr=False)

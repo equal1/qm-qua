@@ -10,8 +10,6 @@ from qm.grpc.results_analyser import (
     GetJobErrorsRequest,
     GetJobStateResponse,
     JobResultsServiceStub,
-    GetJobDebugDataRequest,
-    GetJobDebugDataResponse,
     GetJobNamedResultRequest,
     GetJobErrorsResponseError,
     GetJobNamedResultResponse,
@@ -72,7 +70,3 @@ class JobResultServiceApi(BaseApi):
         request = GetJobResultSchemaRequest(job_id=job_id)
         response = run_async(self._stub.get_job_result_schema(request, timeout=self._timeout))
         return response
-
-    def get_job_debug_data(self, job_id: str) -> AsyncIterator[GetJobDebugDataResponse]:
-        request = GetJobDebugDataRequest(job_id=job_id)
-        return self._stub.get_job_debug_data(request, timeout=self._timeout)

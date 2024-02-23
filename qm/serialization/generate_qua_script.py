@@ -3,19 +3,21 @@ import types
 import logging
 import datetime
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import betterproto
 import numpy as np
 from marshmallow import ValidationError
 
 from qm.grpc import qua
-from qm.grpc.qua import QuaProgram
 from qm.program import load_config
 from qm.grpc.qua_config import QuaConfig
+from qm.utils.protobuf_utils import Node
 from qm import Program, DictQuaConfig, version
+from qm.grpc.qua import QuaProgram, QuaResultAnalysis
 from qm.program.ConfigBuilder import convert_msg_to_config
 from qm.serialization.qua_node_visitor import QuaNodeVisitor
+from qm.utils.list_compression_utils import Chunk, split_list_to_chunks
 from qm.serialization.qua_serializing_visitor import QuaSerializingVisitor
 from qm.exceptions import ConfigValidationException, ConfigSerializationException
 
@@ -31,16 +33,24 @@ SERIALIZATION_NOT_COMPLETE = "SERIALIZATION WAS NOT COMPLETE"
 logger = logging.getLogger(__name__)
 
 
-def assert_programs_are_equal(prog1: QuaProgram, prog2: QuaProgram):
-    StripLocationVisitor.strip(prog1)
-    StripLocationVisitor.strip(prog2)
-    RenameStreamVisitor().visit(prog1)
-    RenameStreamVisitor().visit(prog2)
-    assert prog1.compiler_options == prog2.compiler_options
-    assert prog1.config == prog2.config
-    assert prog1.dyn_config == prog2.dyn_config
-    assert prog1.script.to_dict() == prog2.script.to_dict()
-    assert sorted(prog1.result_analysis.model, key=str) == sorted(prog2.result_analysis.model, key=str)
+def standardize_program_for_comparison(prog: QuaProgram) -> QuaProgram:
+    """There are things in the PB model that if they are different, the programs behaves exactly the same.
+    These 3 things are
+    1. the value of the loc field, that tells where the command was defined
+    2. the names of the variables, as long as the commands are the same.
+    3. the order of the variables in the result analysis
+    """
+    prog.result_analysis = QuaResultAnalysis().from_dict(prog.result_analysis.to_dict())
+    StripLocationVisitor.strip(prog)
+    RenameStreamVisitor().visit(prog)
+    prog.result_analysis.model = sorted(prog.result_analysis.model, key=str)
+    return prog
+
+
+def assert_programs_are_equal(prog1: QuaProgram, prog2: QuaProgram) -> None:
+    prog1 = standardize_program_for_comparison(prog1)
+    prog2 = standardize_program_for_comparison(prog2)
+    assert prog1 == prog2
 
 
 def generate_qua_script(prog: Program, config: Optional[DictQuaConfig] = None) -> str:
@@ -56,11 +66,13 @@ def generate_qua_script(prog: Program, config: Optional[DictQuaConfig] = None) -
         except AttributeError:
             logger.warning("Could not generate a loaded config. Maybe there is no `QuantumMachinesManager` instance?")
 
-    proto_prog = prog.build(QuaConfig())
+    proto_prog = prog.qua_program
     return _generate_qua_script_pb(proto_prog, proto_config, config)
 
 
-def _generate_qua_script_pb(proto_prog, proto_config: Optional, original_config: Optional):
+def _generate_qua_script_pb(
+    proto_prog: QuaProgram, proto_config: Optional[QuaConfig], original_config: Optional[DictQuaConfig]
+) -> str:
     extra_info = ""
     serialized_program = ""
     pretty_original_config = None
@@ -71,7 +83,7 @@ def _generate_qua_script_pb(proto_prog, proto_config: Optional, original_config:
         except Exception as e:
             trace = traceback.format_exception(*sys.exc_info())
             extra_info = extra_info + _error_string(e, trace, CONFIG_ERROR)
-            pretty_original_config = original_config
+            pretty_original_config = f"{original_config}"
 
     pretty_proto_config = None
     if proto_config is not None:
@@ -105,10 +117,10 @@ loaded_config = {pretty_proto_config}
 """
 
 
-def _validate_program(old_prog, serialized_program: str) -> Optional[str]:
+def _validate_program(old_prog: QuaProgram, serialized_program: str) -> str:
     generated_mod = types.ModuleType("gen")
     exec(serialized_program, generated_mod.__dict__)
-    new_prog = generated_mod.prog.build(QuaConfig())
+    new_prog = generated_mod.prog.qua_program
 
     try:
         assert_programs_are_equal(old_prog, new_prog)
@@ -131,7 +143,7 @@ def _validate_program(old_prog, serialized_program: str) -> Optional[str]:
         """
 
 
-def _error_string(e: Exception, trace, error_type: str) -> str:
+def _error_string(e: Exception, trace: List[str], error_type: str) -> str:
     return f"""
 
     ####     {error_type}     ####
@@ -146,7 +158,7 @@ def _error_string(e: Exception, trace, error_type: str) -> str:
             """
 
 
-def _program_string(prog) -> str:
+def _program_string(prog: QuaProgram) -> str:
     """Will create a canonized string representation of the program"""
     strip_location_visitor = StripLocationVisitor()
     strip_location_visitor.visit(prog)
@@ -154,7 +166,7 @@ def _program_string(prog) -> str:
     return string
 
 
-def _print_config(config_part: Dict[str, Any], indent_level: int = 1) -> str:
+def _print_config(config_part: Mapping[str, Any], indent_level: int = 1) -> str:
     """Formats a python dictionary into an executable string representation.
     Unlike pretty print, it better supports nested dictionaries. Also, auto converts
     lists into a more compact form.
@@ -190,7 +202,7 @@ def _print_config(config_part: Dict[str, Any], indent_level: int = 1) -> str:
     return config_part_str
 
 
-def _value_to_str(indent_level, value):
+def _value_to_str(indent_level: int, value: Any) -> str:
     # To support numpy types, we convert them to normal python types:
     if type(value).__module__ == np.__name__:
         value = value.tolist()
@@ -220,81 +232,40 @@ def _value_to_str(indent_level, value):
         return str(value) + ",\n"
 
 
-class _Chunk:
-    def __init__(self):
-        self._data = []
-        self._accepts_different = True
-
-    def add(self, element):
-        if self._data and element == self._data[-1]:
-            self._data.append(element)
-            self._accepts_different = False
-            return
-
-        if self.accepts_different:
-            self._data.append(element)
-            return
-
-        raise ValueError("Tried to add number to a chunk that is already uniform")
-
-    @property
-    def accepts_different(self):
-        return self._accepts_different
-
-    def __str__(self):
-        if self.accepts_different:
-            return str(self._data)
-        return f"[{self._data[0]}] * {len(self._data)}"
-
-
-def _split_list_to_chunks(list_data):
-    curr_chunk = _Chunk()
-    chunks = [curr_chunk]
-    for idx, curr_item in enumerate(list_data):
-        if idx >= 1 and curr_item != list_data[idx - 1]:
-            item_equals_next = idx < len(list_data) - 1 and curr_item == list_data[idx + 1]
-            if item_equals_next or not curr_chunk.accepts_different:
-                curr_chunk = _Chunk()
-                chunks.append(curr_chunk)
-
-        curr_chunk.add(curr_item)
-    return chunks
-
-
-def _serialize_chunks(chunks):
+def _serialize_chunks(chunks: List[Chunk[object]]) -> str:
     return " + ".join([str(chunk) for chunk in chunks])
 
 
-def _make_compact_string_from_list(list_data):
+def _make_compact_string_from_list(list_data: List[object]) -> str:
     """
     Turns a multi-value list into the most compact string representation of it,
     replacing identical consecutive values by list multiplication.
     """
-    chunks = _split_list_to_chunks(list_data)
+    chunks = split_list_to_chunks(list_data)
     return _serialize_chunks(chunks)
 
 
 class StripLocationVisitor(QuaNodeVisitor):
     """Go over all nodes and if they have a location property, we strip it"""
 
-    def _default_enter(self, node):
+    def _default_enter(self, node: Node) -> bool:
         if hasattr(node, "loc"):
             node.loc = "stripped"
         return isinstance(node, betterproto.Message)
 
     @staticmethod
-    def strip(node):
+    def strip(node: Node) -> None:
         StripLocationVisitor().visit(node)
 
 
 class RenameStreamVisitor(QuaNodeVisitor):
-    """This cladd standardizes the names of the streams, so when comparing two programs, the names will be the same"""
+    """This class standardizes the names of the streams, so when comparing two programs, the names will be the same"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._max_n = 0
-        self._old_to_new_map = {}
+        self._old_to_new_map: Dict[str, str] = {}
 
-    def _change_var_name(self, curr_s):
+    def _change_var_name(self, curr_s: str) -> str:
         if curr_s in self._old_to_new_map:
             return self._old_to_new_map[curr_s]
         non_digits = "".join([s for s in curr_s if not s.isdigit()])
@@ -303,17 +274,17 @@ class RenameStreamVisitor(QuaNodeVisitor):
         self._old_to_new_map[curr_s] = new_name
         return new_name
 
-    def visit_qm_grpc_qua_QuaProgramMeasureStatement(self, node: qua.QuaProgramMeasureStatement):
+    def visit_qm_grpc_qua_QuaProgramMeasureStatement(self, node: qua.QuaProgramMeasureStatement) -> None:
         if node.stream_as:
             node.stream_as = self._change_var_name(node.stream_as)
         if node.timestamp_label:
             node.timestamp_label = self._change_var_name(node.timestamp_label)
 
-    def visit_qm_grpc_qua_QuaProgramSaveStatement(self, node: qua.QuaProgramSaveStatement):
+    def visit_qm_grpc_qua_QuaProgramSaveStatement(self, node: qua.QuaProgramSaveStatement) -> None:
         if node.tag:
             node.tag = self._change_var_name(node.tag)
 
-    def _default_enter(self, node):
+    def _default_enter(self, node: Node) -> bool:
         """This function is for the Value of betterproto. There is a chance we can visit the object directly"""
         if hasattr(node, "string_value") and node.string_value and node.string_value in self._old_to_new_map:
             node.string_value = self._old_to_new_map[node.string_value]

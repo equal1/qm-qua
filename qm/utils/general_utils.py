@@ -2,6 +2,8 @@ import time
 import logging
 from typing import Any, Dict, Generic, TypeVar, Callable
 
+SERVICE_HEADER_NAME = "x-grpc-service"
+
 T = TypeVar("T")
 
 

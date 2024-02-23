@@ -197,17 +197,6 @@ class GetJobErrorsRequest(betterproto.Message):
 
 
 @dataclass(eq=False, repr=False)
-class GetJobDebugDataRequest(betterproto.Message):
-    job_id: str = betterproto.string_field(1)
-
-
-@dataclass(eq=False, repr=False)
-class GetJobDebugDataResponse(betterproto.Message):
-    data: bytes = betterproto.bytes_field(1)
-    job_id: str = betterproto.string_field(2)
-
-
-@dataclass(eq=False, repr=False)
 class GetJobErrorsResponse(betterproto.Message):
     errors: List["GetJobErrorsResponseError"] = betterproto.message_field(1)
     job_id: str = betterproto.string_field(2)
@@ -423,24 +412,6 @@ class JobResultsServiceStub(betterproto.ServiceStub):
         ):
             yield response
 
-    async def get_job_debug_data(
-        self,
-        get_job_debug_data_request: "GetJobDebugDataRequest",
-        *,
-        timeout: Optional[float] = None,
-        deadline: Optional["Deadline"] = None,
-        metadata: Optional["MetadataLike"] = None
-    ) -> AsyncIterator["GetJobDebugDataResponse"]:
-        async for response in self._unary_stream(
-            "/qm.grpc.results_analyser.JobResultsService/GetJobDebugData",
-            get_job_debug_data_request,
-            GetJobDebugDataResponse,
-            timeout=timeout,
-            deadline=deadline,
-            metadata=metadata,
-        ):
-            yield response
-
     async def get_job_errors(
         self,
         get_job_errors_request: "GetJobErrorsRequest",
@@ -497,11 +468,6 @@ class JobResultsServiceBase(ServiceBase):
     ) -> AsyncIterator["GetJobNamedResultResponse"]:
         raise grpclib.GRPCError(grpclib.const.Status.UNIMPLEMENTED)
 
-    async def get_job_debug_data(
-        self, get_job_debug_data_request: "GetJobDebugDataRequest"
-    ) -> AsyncIterator["GetJobDebugDataResponse"]:
-        raise grpclib.GRPCError(grpclib.const.Status.UNIMPLEMENTED)
-
     async def get_job_errors(
         self, get_job_errors_request: "GetJobErrorsRequest"
     ) -> "GetJobErrorsResponse":
@@ -546,17 +512,6 @@ class JobResultsServiceBase(ServiceBase):
             request,
         )
 
-    async def __rpc_get_job_debug_data(
-        self,
-        stream: "grpclib.server.Stream[GetJobDebugDataRequest, GetJobDebugDataResponse]",
-    ) -> None:
-        request = await stream.recv_message()
-        await self._call_rpc_handler_server_stream(
-            self.get_job_debug_data,
-            stream,
-            request,
-        )
-
     async def __rpc_get_job_errors(
         self, stream: "grpclib.server.Stream[GetJobErrorsRequest, GetJobErrorsResponse]"
     ) -> None:
@@ -597,12 +552,6 @@ class JobResultsServiceBase(ServiceBase):
                 grpclib.const.Cardinality.UNARY_STREAM,
                 GetJobNamedResultRequest,
                 GetJobNamedResultResponse,
-            ),
-            "/qm.grpc.results_analyser.JobResultsService/GetJobDebugData": grpclib.const.Handler(
-                self.__rpc_get_job_debug_data,
-                grpclib.const.Cardinality.UNARY_STREAM,
-                GetJobDebugDataRequest,
-                GetJobDebugDataResponse,
             ),
             "/qm.grpc.results_analyser.JobResultsService/GetJobErrors": grpclib.const.Handler(
                 self.__rpc_get_job_errors,

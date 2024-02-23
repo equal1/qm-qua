@@ -22,17 +22,24 @@ from qm.octave.octave_manager import OctaveManager
 from qm.simulate.interface import SimulationConfig
 from qm.elements_db import ElementsDB, init_elements
 from qm.utils.types_utils import convert_object_type
-from qm.api.models.capabilities import ServerCapabilities
 from qm.program.ConfigBuilder import convert_msg_to_config
 from qm.elements.up_converted_input import UpconvertedInput
 from qm._QmJobErrors import InvalidDigitalInputPolarityError
 from qm.octave._calibration_names import COMMON_OCTAVE_PREFIX
-from qm.grpc.qua_config import QuaConfig, QuaConfigQuaConfigV1
+from qm.api.models.capabilities import OPX_FEM_IDX, ServerCapabilities
+from qm.utils.config_utils import get_fem_config, get_simulation_sampling_rate
 from qm.api.models.compiler import CompilerOptionArguments, standardize_compiler_params
+from qm.type_hinting.config_types import StandardPort, DictQuaConfig, PortReferenceType
 from qm.elements.element_inputs import MixInputs, SingleInput, static_set_mixer_correction
-from qm.type_hinting.config_types import DictQuaConfig, PortReferenceType, DigitalInputPortConfigType
 from qm.type_hinting.general import Value, Number, PathLike, NumpySupportedFloat, NumpySupportedValue
 from qm.octave.octave_mixer_calibration import AutoCalibrationParams, OctaveMixerCalibration, MixerCalibrationResults
+from qm.grpc.qua_config import (
+    QuaConfig,
+    QuaConfigQuaConfigV1,
+    QuaConfigPortReference,
+    QuaConfigDigitalInputPortDec,
+    QuaConfigDigitalInputPortDecPolarity,
+)
 from qm.exceptions import (
     QmValueError,
     JobCancelledError,
@@ -218,7 +225,7 @@ class QuantumMachine:
 
         if simulate is not None:
             job_id, simulated_response_part = self._simulation_api.simulate(
-                self.get_config(), program, simulate, standardized_compiler_options
+                self._get_pb_config(), program, simulate, standardized_compiler_options
             )
             return SimulatedJob(
                 job_id=job_id,
@@ -226,6 +233,7 @@ class QuantumMachine:
                 capabilities=self._capabilities,
                 store=self._store,
                 simulated_response=simulated_response_part,
+                sampling_rate=get_simulation_sampling_rate(self._config),
             )
 
         self._queue.clear()
@@ -270,7 +278,7 @@ class QuantumMachine:
         if compiler_options is None:
             compiler_options = CompilerOptionArguments()
 
-        return self._frontend.compile(self._id, program.build(self._config), compiler_options)
+        return self._frontend.compile(self._id, program.qua_program, compiler_options)
 
     def list_controllers(self) -> Tuple[str, ...]:
         """Gets a list with the defined controllers in this qm
@@ -279,7 +287,8 @@ class QuantumMachine:
             The names of the controllers configured in this qm
         """
         # TODO (YR) - why is this function here, QM should not be aware of the controllers
-        return tuple(self._get_config_as_object().controllers)
+        config = self._get_config_as_object()
+        return tuple(config.control_devices) or tuple(config.controllers)
 
     def set_mixer_correction(
         self,
@@ -360,7 +369,7 @@ class QuantumMachine:
 
         if lo_if_dict is None:
             lo_if_dict = {inst.input.lo_frequency: (inst.intermediate_frequency,)}
-        client = self._octave._octave_manager._get_client(inst.input.port)
+        client = self._octave._octave_manager._get_client_from_port(inst.input.port)
         res = OctaveMixerCalibration(quantum_machine=self, client=client).calibrate(
             element=inst,
             lo_if_dict=lo_if_dict,
@@ -374,9 +383,9 @@ class QuantumMachine:
             else:
                 calibration_db.update_calibration_result(res, inst.input.port, "auto")
 
-        key = (inst.input.lo_frequency, inst.input.gain)
+        key = (inst.input.lo_frequency, cast(float, inst.input.gain))
         if key in res:
-            qe_cal = res[(inst.input.lo_frequency, inst.input.gain)]
+            qe_cal = res[key]
             inst.input.set_output_dc_offset(i_offset=qe_cal.i0, q_offset=qe_cal.q0)
 
         for (lo_freq, _), lo_cal in res.items():
@@ -419,7 +428,7 @@ class QuantumMachine:
         Returns:
             the offset, in normalized output units
         """
-        config: DictQuaConfig = self.get_config()
+        config = self._get_pb_config()
         input_instance = self._elements[element].input
         if isinstance(input_instance, SingleInput):
             port = input_instance.port
@@ -433,21 +442,13 @@ class QuantumMachine:
         else:
             raise ValueError(f"Element {element} of type {type(input_instance)} does not have a 'port' property.")
 
-        # TODO (YR) - this part should be under the element, but for now I keep it here.
-        #  This is the next phase of the work
+        port_number = port.number
 
-        controller: str = port.controller
-        port_number: int = port.number
-
-        if controller in config["controllers"]:
-            config_controller = config["controllers"][controller]
+        specific_fem = get_fem_config(config, port)
+        if port_number in specific_fem.analog_outputs:
+            return specific_fem.analog_outputs[port_number].offset
         else:
-            raise InvalidConfigError("Controller does not exist")
-
-        if port_number in config_controller["analog_outputs"]:
-            return config_controller["analog_outputs"][port_number]["offset"]
-        else:
-            raise InvalidConfigError(f"Controller {config_controller} does not exist")
+            raise InvalidConfigError(f"Port num {port_number} does not exist")
 
     def set_output_dc_offset_by_element(
         self,
@@ -583,7 +584,7 @@ class QuantumMachine:
         Returns:
             the offset, in normalized output units
         """
-        config = self.get_config()
+        config = self._get_pb_config()
 
         element_obj = self._elements[element]
         outputs = element_obj._config.outputs
@@ -592,20 +593,12 @@ class QuantumMachine:
         else:
             raise Exception("Output does not exist")
 
-        port_controller, input_number = port.controller, port.number
+        specific_fem = get_fem_config(config, port)
 
-        if port_controller in config["controllers"]:
-            controller = config["controllers"][port_controller]
+        if port.number in specific_fem.analog_outputs:
+            return specific_fem.analog_inputs[port.number].offset
         else:
-            raise Exception("Controller does not exist")
-
-        if "analog_inputs" not in controller:
-            raise Exception("Controller has not analog inputs defined")
-
-        if input_number in controller["analog_inputs"]:
-            return cast(float, controller["analog_inputs"][input_number]["offset"])
-        else:
-            raise Exception("Port not found")
+            raise InvalidConfigError(f"Port num {port.number} does not exist")
 
     def get_digital_delay(self, element: str, digital_input: str) -> int:
         """Gets the delay of the digital input of the element
@@ -928,37 +921,27 @@ class QuantumMachine:
         )
 
     def set_digital_input_threshold(self, port: PortReferenceType, threshold: float) -> None:
-        controller_name, port_number = port
-        self._frontend.set_digital_input_threshold(self._id, controller_name, port_number, threshold)
+        controller_name, fem_number, port_number = _standardize_port(port)
+        self._frontend.set_digital_input_threshold(self._id, controller_name, fem_number, port_number, threshold)
 
-    def _get_digital_input_port(self, port: PortReferenceType) -> DigitalInputPortConfigType:
-        config = self.get_config()
-        component = "Controller"
-        target_controller_name, target_port = port
-        controller = config["controllers"].get(target_controller_name, None)
-        if controller is not None:
-            controller_digital_inputs: Optional[Dict[int, DigitalInputPortConfigType]] = controller.get(
-                "digital_inputs", None
-            )
-            if controller_digital_inputs is not None:
-                if target_port in controller_digital_inputs:
-                    return controller_digital_inputs[target_port]
-                else:
-                    component = "Digital input port"
-            else:
-                component = "Digital input for controller"
-
-        raise InvalidConfigError(f"{component} not found")
+    def _get_digital_input_port(self, port: PortReferenceType) -> QuaConfigDigitalInputPortDec:
+        config = self._get_pb_config()
+        controller_name, fem_number, port_number = _standardize_port(port)
+        port_obj = QuaConfigPortReference(controller=controller_name, fem=fem_number, number=port_number)
+        fem_config = get_fem_config(config, port_obj)
+        if port_obj.number in fem_config.digital_inputs:
+            return fem_config.digital_inputs[port_number]
+        raise InvalidConfigError("Digital input port not found")
 
     def get_digital_input_threshold(self, port: PortReferenceType) -> float:
-        return cast(float, self._get_digital_input_port(port)["threshold"])
+        return self._get_digital_input_port(port).threshold
 
     def set_digital_input_deadtime(self, port: PortReferenceType, deadtime: int) -> None:
-        controller_name, port_number = port
-        self._frontend.set_digital_input_dead_time(self._id, controller_name, port_number, deadtime)
+        controller_name, fem_number, port_number = _standardize_port(port)
+        self._frontend.set_digital_input_dead_time(self._id, controller_name, fem_number, port_number, deadtime)
 
     def get_digital_input_deadtime(self, port: PortReferenceType) -> int:
-        return self._get_digital_input_port(port)["deadtime"]
+        return self._get_digital_input_port(port).deadtime
 
     def set_digital_input_polarity(self, port: PortReferenceType, polarity: str) -> None:
         try:
@@ -968,8 +951,14 @@ class QuantumMachine:
                 f"Invalid value for polarity {polarity}. Valid values are: 'RISING' or 'FALLING'."
             )
 
-        controller_name, port_number = port
-        self._frontend.set_digital_input_polarity(self._id, controller_name, port_number, polarity_enum)
+        controller_name, fem_number, port_number = _standardize_port(port)
+        self._frontend.set_digital_input_polarity(self._id, controller_name, fem_number, port_number, polarity_enum)
 
     def get_digital_input_polarity(self, port: PortReferenceType) -> str:
-        return self._get_digital_input_port(port)["polarity"]
+        return QuaConfigDigitalInputPortDecPolarity(self._get_digital_input_port(port).polarity).name
+
+
+def _standardize_port(port: PortReferenceType) -> StandardPort:
+    if len(port) == 2:
+        return port[0], OPX_FEM_IDX, port[1]
+    return cast(StandardPort, port)

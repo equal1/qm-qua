@@ -1,92 +1,58 @@
-from typing import List, Union
+from typing import TYPE_CHECKING, List, Union, Sequence
 
 from betterproto.lib.google.protobuf import Value, ListValue
 
 from qm.grpc.qua import QuaResultAnalysis
 
-_RESULT_SYMBOL = "@re"
+if TYPE_CHECKING:
+    from qm.qua._dsl import _ResultSource
+
+
+class _OutputStream:
+    def __init__(self, input_stream: "_ResultSource", operator_array: Sequence[str], tag: str):
+        self._input_stream = input_stream
+        self._operator_array: Sequence[Union[List[str], str]] = operator_array
+        self.tag = tag
+
+    def to_proto(self) -> List[Union[List[str], str]]:
+        return list(self._operator_array) + [self._input_stream._to_proto()]
 
 
 class _ResultAnalysis:
     def __init__(self, result_analysis: QuaResultAnalysis):
-        super().__init__()
         self._result_analysis = result_analysis
-        self._saves = []
+        self._saves: List[_OutputStream] = []
 
-    def get_outputs(self):
-        names = []
-        for save in self._saves:
-            if save.tag is not None:
-                names.append(save.tag)
-        return names
-
-    def save(self, tag, expression):
+    def _add_output_stream(self, tag: str, expression: "_ResultSource", operator_array: List[str]) -> None:
         for save in self._saves:
             if save.tag == tag:
                 raise Exception("can not save two streams with the same tag")
-        self._saves.append(_OutputStream(expression, ["save", tag], tag))
+        self._saves.append(_OutputStream(expression, operator_array, tag))
 
-    def save_all(self, tag, expression):
-        for save in self._saves:
-            if save.tag == tag:
-                raise Exception("can not save two streams with the same tag")
-        self._saves.append(_OutputStream(expression, ["saveAll", tag], tag))
+    def save(self, tag: str, expression: "_ResultSource") -> None:
+        self._add_output_stream(tag, expression, operator_array=["save", tag])
 
-    def auto_save_all(self, tag, expression):
-        for save in self._saves:
-            if save.tag == tag:
-                raise Exception("can not save two streams with the same tag")
-        self._saves.append(_OutputStream(expression, ["saveAll", tag, "auto"], tag))
+    def save_all(self, tag: str, expression: "_ResultSource") -> None:
+        self._add_output_stream(tag, expression, operator_array=["saveAll", tag])
 
-    def _to_list_value(self, from_list: List[Union[str, List[str]]]) -> ListValue:
-        res = ListValue()
-        for item in from_list:
-            if isinstance(item, str):
-                res.values.append(Value(string_value=item))
-            elif isinstance(item, list):
-                res.values.append(Value(list_value=self._to_list_value(item)))
-        return res
+    def auto_save_all(self, tag: str, expression: "_ResultSource") -> None:
+        self._add_output_stream(tag, expression, operator_array=["saveAll", tag, "auto"])
 
-    def _add_pipeline(self, output):
-        proto_output = output._to_proto()
-        value = self._to_list_value(proto_output)
+    def _add_pipeline(self, output: _OutputStream) -> None:
+        proto_output = output.to_proto()
+        value = _to_list_value(proto_output)
         self._result_analysis.model.append(value)
 
-    def generate_proto(self):
+    def generate_proto(self) -> None:
         for save in self._saves:
             self._add_pipeline(save)
-        # print(self._result_analysis.model)
-
-    def build(self):
-        copy = QuaResultAnalysis()
-        copy.CopyFrom(self._result_analysis)
-        return copy
 
 
-class _OutputStream(object):
-    def __init__(self, input_stream, operator_array: List[str], tag):
-        super().__init__()
-        self._input_stream = input_stream
-        self._operator_array = operator_array
-        self.tag = tag
-
-    def _to_proto(self) -> List[Union[List[str], str]]:
-        return self._operator_array + [self._input_stream._to_proto()]
-
-    def input_stream(self):
-        return self._input_stream
-
-    def set_input_stream(self, new_stream):
-        self._input_stream = new_stream
-
-
-class _Node(object):
-    def __init__(self, input_stream, output):
-        self._input_stream = input_stream
-        self._outputs = [output]
-
-    def input_stream(self):
-        return self._input_stream
-
-    def outputs(self):
-        return self._outputs
+def _to_list_value(from_list: Sequence[Union[str, List[str]]]) -> ListValue:
+    res = ListValue()
+    for item in from_list:
+        if isinstance(item, str):
+            res.values.append(Value(string_value=item))
+        elif isinstance(item, list):
+            res.values.append(Value(list_value=_to_list_value(item)))
+    return res

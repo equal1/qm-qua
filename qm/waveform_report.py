@@ -6,7 +6,6 @@ import functools
 import dataclasses
 from copy import deepcopy
 from dataclasses import dataclass
-from typing_extensions import Protocol
 from abc import ABCMeta, abstractmethod
 from typing import (
     Any,
@@ -21,14 +20,15 @@ from typing import (
     Callable,
     Iterable,
     Optional,
+    Protocol,
     Sequence,
     MutableMapping,
     cast,
 )
 
 import numpy as np
-import plotly.colors  # type: ignore[import]
-import plotly.graph_objects as go  # type: ignore[import]
+import plotly.colors  # type: ignore[import-untyped]
+import plotly.graph_objects as go  # type: ignore[import-untyped]
 
 from qm.type_hinting.simulator_types import (
     IqInfoType,
@@ -157,7 +157,7 @@ def pretty_string_freq(f: float) -> str:
     elif 1000 <= f < 1_000_000:
         div, units = 1000.0, "kHz"
     else:
-        div, units = 10e6, "MHz"
+        div, units = 1e6, "MHz"
     return f"{format_float(f / div).rstrip('0').rstrip('.')}{units}"
 
 
@@ -176,7 +176,7 @@ class PlayedAnalogWaveform(PlayedWaveform):
         dict_description = cast(PlayedAnalogWaveformType, dict_description)
         pulse_chirp_info = dict_description["chirpInfo"]
         is_pulse_have_chirp = len(pulse_chirp_info["units"]) > 0 or len(pulse_chirp_info["rate"]) > 0
-        formated_attribute_list = dict(
+        formatted_attribute_list = dict(
             current_amp_elements=dict_description["currentGMatrixElements"],
             current_dc_offset_by_port=dict_description["currentDCOffsetByPort"],
             current_intermediate_frequency=dict_description["currentIntermediateFrequency"],
@@ -185,7 +185,7 @@ class PlayedAnalogWaveform(PlayedWaveform):
             chirp_info=pulse_chirp_info if is_pulse_have_chirp else None,
             current_phase=dict_description.get("currentPhase", 0),
         )
-        return cls(**cls._build_initialization_dict(dict_description, formated_attribute_list))
+        return cls(**cls._build_initialization_dict(dict_description, formatted_attribute_list))
 
     def _to_custom_string(self, show_chirp: bool = True) -> str:
         _attributes = super()._common_attributes_to_printable_str_list()
@@ -425,7 +425,7 @@ class WaveformReport:
 
     def create_plot(
         self,
-        samples: Optional[Iterable[Any]] = None,  # TODO: for liran - fill type
+        samples: Optional[Iterable[Any]] = None,  # TODO: detailed type
         controllers: Optional[List[str]] = None,
         plot: bool = True,
         save_path: Optional[str] = None,
@@ -479,7 +479,7 @@ class _WaveformPlotBuilder:
         self._figure: Optional[go.Figure] = None
         self._already_registered_qe: Set[str] = set()
         self._colormap: Dict[str, Any] = {}
-        self._max_parallel_traces_per_row: Dict[str, Any] = {}  # TODO: for liran - fill type
+        self._max_parallel_traces_per_row: Dict[str, Any] = {}  # TODO: detailed type
         return
 
     @property
@@ -545,7 +545,7 @@ class _WaveformPlotBuilder:
         self._max_parallel_traces_per_row["analog"] = {}
         self._max_parallel_traces_per_row["digital"] = {}
 
-        def calc_row(waveform_list: List[Any]) -> int:  # TODO: for liran - fill type
+        def calc_row(waveform_list: List[Any]) -> int:  # TODO: detailed type
             max_in_row = 0
             functional_ts = sorted(
                 [(r.timestamp, 1) for r in waveform_list] + [(r.ends_at, -1) for r in waveform_list],
@@ -583,10 +583,10 @@ class _WaveformPlotBuilder:
 
     def _get_output_port_waveform_plot_data(
         self, port_played_waveforms: List[PlayedWaveform], gui_args: Dict[str, Any]
-    ) -> Any:  # TODO: for liran - fill type
-        graph_data: List[Any] = []  # TODO: for liran - fill type
-        annotations: List[Any] = []  # TODO: for liran - fill type
-        levels: List[Any] = []  # TODO: for liran - fill type
+    ) -> Any:  # TODO: detailed type, for for the rest of the Any's
+        graph_data: List[Any] = []
+        annotations: List[Any] = []
+        levels: List[Any] = []
         x_axis_name = gui_args["x_axis_name"]
         max_in_row = gui_args["max_in_row"]
         diff_between_traces, start_y = (0.2, 1.2) if max_in_row <= 7 else (1.4 / max_in_row, 1.45)

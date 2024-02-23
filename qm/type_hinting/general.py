@@ -1,7 +1,6 @@
 import os
 import pathlib
-from typing_extensions import Protocol
-from typing import Any, Dict, Union, ClassVar
+from typing import Any, Dict, Union, ClassVar, Protocol
 
 import numpy
 

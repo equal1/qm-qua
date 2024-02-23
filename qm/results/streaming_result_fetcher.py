@@ -1,10 +1,9 @@
 import logging
 import zipfile
 from collections.abc import Mapping
-from typing import Dict, List, Tuple, Union, BinaryIO, KeysView, Optional, Generator, ItemsView, ValuesView, cast
+from typing import Dict, List, Tuple, BinaryIO, KeysView, Optional, Generator, ItemsView, ValuesView, cast
 
 from qm.persistence import BaseStore
-from qm.utils.async_utils import run_async
 from qm.api.job_result_api import JobResultServiceApi
 from qm.api.models.capabilities import ServerCapabilities
 from qm.utils.general_utils import run_until_with_timeout
@@ -185,7 +184,7 @@ class StreamingResultFetcher(Mapping):
             }
         )
 
-    def get(self, name: str) -> Optional[BaseStreamingResultFetcher]:
+    def get(self, name: str, /) -> Optional[BaseStreamingResultFetcher]:
         """Get a handle to a named result from [stream_processing][qm.qua._dsl.stream_processing]
 
         Args:
@@ -197,7 +196,9 @@ class StreamingResultFetcher(Mapping):
         """
         return self._all_results.get(name)
 
-    def __contains__(self, name: str) -> bool:
+    def __contains__(self, name: object) -> bool:
+        if not isinstance(name, str):
+            return False
         return name in self._all_results
 
     def wait_for_all_values(self, timeout: Optional[float] = None) -> bool:
@@ -225,27 +226,3 @@ class StreamingResultFetcher(Mapping):
             timeout=timeout if timeout else float("infinity"),
             timeout_message="Job was not done in time",
         )
-
-    def get_debug_data(self, writer: Optional[Union[BinaryIO, str]] = None) -> None:
-        """
-        Returns:
-            debugging data to report to QM
-        """
-        if writer is None:
-            writer = f"./{self._job_id}-DebugData.zip"
-
-        owning_writer = False
-        if isinstance(writer, str):
-            writer = open(writer, "wb+")
-            owning_writer = True
-
-        try:
-            run_async(self._fetch_all_job_debug_data(writer))
-
-        finally:
-            if owning_writer:
-                writer.close()
-
-    async def _fetch_all_job_debug_data(self, writer: BinaryIO) -> None:
-        async for result in self._service.get_job_debug_data(self._job_id):
-            writer.write(result.data)

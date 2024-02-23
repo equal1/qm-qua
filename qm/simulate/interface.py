@@ -1,14 +1,88 @@
 import abc
 from dataclasses import dataclass
-from typing import List, Union, Optional
+from typing import Any, List, Type, Tuple, Union, Generic, TypeVar, Optional
 
-from qm.grpc.frontend import SimulationRequest, ExecutionRequestSimulateSimulationInterfaceNone
+from dependency_injector.wiring import Provide, inject
+
+from qm.api.models.capabilities import ServerCapabilities
+from qm.containers.capabilities_container import CapabilitiesContainer
+from qm.grpc.frontend import (
+    SimulationRequest,
+    ExecutionRequestSimulateSimulationInterfaceNone,
+    ExecutionRequestSimulateSimulationInterfaceLoopbackConnections,
+    ExecutionRequestSimulateSimulationInterfaceRawInterfaceConnections,
+)
+
+SupportedConnectionTypes = Union[
+    Tuple[str, int, int, str, int, int],
+    Tuple[str, int, str, int],
+    Tuple[str, str, int],
+    Tuple[str, int, int, List[float]],
+    Tuple[str, int, List[float]],
+]
 
 
-class SimulatorInterface(metaclass=abc.ABCMeta):
-    @abc.abstractmethod
+T = TypeVar(
+    "T",
+    ExecutionRequestSimulateSimulationInterfaceLoopbackConnections,
+    ExecutionRequestSimulateSimulationInterfaceRawInterfaceConnections,
+)
+
+
+class SimulatorInterface(Generic[T], metaclass=abc.ABCMeta):
+    def __init__(self, connections: List[SupportedConnectionTypes], noisePower: float = 0.0):
+        self.noisePower = self._validate_and_standardize_noise_power(noisePower)
+        self._connections: List[T] = self._validate_and_standardize_connections(connections)
+
     def update_simulate_request(self, request: SimulationRequest) -> SimulationRequest:
+        connections = [self._fix_connection(connection) for connection in self._connections]
+        return self._update_simulate_request(request, connections)
+
+    @abc.abstractmethod
+    def _update_simulate_request(self, request: SimulationRequest, connections: List[T]) -> SimulationRequest:
         pass
+
+    @abc.abstractmethod
+    def _fix_connection(self, connection: T) -> T:
+        """This functions comes to overcome a bug in the GW that expects the FEM to be 0"""
+        pass
+
+    @staticmethod
+    def _validate_connection_type(connection: Tuple[Any, ...], types: List[Type[Any]], expected_input: str) -> None:
+        if not all(isinstance(c, t) for c, t in zip(connection, types)):
+            raise Exception(f"connection should be {expected_input}")
+
+    @staticmethod
+    def _validate_and_standardize_noise_power(noise_power: float) -> float:
+        if (not isinstance(noise_power, (int, float))) or noise_power < 0:
+            raise Exception("noisePower must be a positive number")
+        return float(noise_power)
+
+    @classmethod
+    def _validate_and_standardize_connections(cls, connections: List[SupportedConnectionTypes]) -> List[T]:
+        if not isinstance(connections, list):
+            raise Exception("connections argument must be of type list")
+        standardized_connections = []
+        for connection in connections:
+            standardized_connections.append(cls._validate_and_standardize_single_connection(connection))
+        return standardized_connections
+
+    @classmethod
+    @abc.abstractmethod
+    def _validate_and_standardize_single_connection(cls, connection: SupportedConnectionTypes) -> T:
+        pass
+
+
+@inject
+def _get_opx_fem_number(capabilities: ServerCapabilities = Provide[CapabilitiesContainer.capabilities]) -> int:
+    """This function is here to overcome a bug in the GW, that expects the FEM to be 0"""
+    return capabilities.fem_number_in_simulator
+
+
+SimulationInterfaceTypes = Union[
+    SimulatorInterface[ExecutionRequestSimulateSimulationInterfaceLoopbackConnections],
+    SimulatorInterface[ExecutionRequestSimulateSimulationInterfaceRawInterfaceConnections],
+]
 
 
 class SimulationConfig:
@@ -43,7 +117,7 @@ class SimulationConfig:
         duration: int = 0,
         include_analog_waveforms: bool = False,
         include_digital_waveforms: bool = False,
-        simulation_interface: Optional[SimulatorInterface] = None,
+        simulation_interface: Optional[SimulationInterfaceTypes] = None,
         controller_connections: Optional[List["ControllerConnection"]] = None,
         extraProcessingTimeoutInMs: int = -1,
     ):

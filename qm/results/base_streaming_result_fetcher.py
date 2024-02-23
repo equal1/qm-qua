@@ -4,8 +4,7 @@ import logging
 import warnings
 from io import BytesIO
 from dataclasses import dataclass
-from typing_extensions import Protocol
-from typing import Any, Dict, List, Tuple, Union, BinaryIO, Optional, cast
+from typing import Any, Dict, List, Tuple, Union, BinaryIO, Optional, Protocol, cast
 
 import numpy
 import numpy.typing
@@ -287,7 +286,7 @@ class BaseStreamingResultFetcher(metaclass=abc.ABCMeta):
             has_dataloss=response.has_dataloss,
         )
 
-    def _get_named_header(self, check_for_errors: bool = False, flat_struct: bool = False) -> NamedJobResultHeader:
+    def _get_named_header(self, check_for_errors: bool = True, flat_struct: bool = False) -> NamedJobResultHeader:
         response = self._service.get_named_header(self._job_id, self.name, flat_struct)
         dtype = _parse_dtype(response.simple_d_type)
 
@@ -308,7 +307,7 @@ class BaseStreamingResultFetcher(metaclass=abc.ABCMeta):
         )
 
     def fetch_all(
-        self, *, check_for_errors: bool = False, flat_struct: bool = False
+        self, *, check_for_errors: bool = True, flat_struct: bool = False
     ) -> Optional[numpy.typing.NDArray[numpy.generic]]:
         """Fetch a result from the current result stream saved in server memory.
         The result stream is populated by the save() and save_all() statements.
@@ -316,8 +315,9 @@ class BaseStreamingResultFetcher(metaclass=abc.ABCMeta):
         may give different results.
 
         Args:
-            flat_struct: results will have a flat structure - dimensions
-                will be part of the shape and not of the type
+            check_for_errors: If true, the function would also check whether run-time errors happened during the
+                program execution and would write to the logger an error message.
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
 
         Returns:
             all result of current result stream
@@ -332,16 +332,33 @@ class BaseStreamingResultFetcher(metaclass=abc.ABCMeta):
         self,
         item: Union[int, slice],
         *,
-        check_for_errors: bool = False,
+        check_for_errors: bool = True,
         flat_struct: bool = False,
     ) -> Optional[numpy.typing.NDArray[numpy.generic]]:
+        """Fetch a single result from the current result stream saved in server memory.
+        The result stream is populated by the save().
+
+        Args:
+            item: ignored
+            check_for_errors: If true, the function would also check whether run-time errors happened during the
+                program execution and would write to the logger an error message.
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
+
+        Returns:
+            the current result
+
+        Example:
+            ```python
+            res.fetch() # return the item in the top position
+            ```
+        """
         return self.strict_fetch(item, check_for_errors=check_for_errors, flat_struct=flat_struct)
 
     def strict_fetch(
         self,
         item: Union[int, slice],
         *,
-        check_for_errors: bool = False,
+        check_for_errors: bool = True,
         flat_struct: bool = False,
     ) -> numpy.typing.NDArray[numpy.generic]:
         """Fetch a result from the current result stream saved in server memory.
@@ -351,8 +368,9 @@ class BaseStreamingResultFetcher(metaclass=abc.ABCMeta):
 
         Args:
             item: The index of the result in the saved results stream.
-            flat_struct: results will have a flat structure - dimensions
-                will be part of the shape and not of the type
+            check_for_errors: If true, the function would also check whether run-time errors happened during the
+                program execution and would write to the logger an error message.
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
 
         Returns:
             a single result if item is integer or multiple results if item is Python slice object.
@@ -391,7 +409,7 @@ class BaseStreamingResultFetcher(metaclass=abc.ABCMeta):
         if header.has_dataloss:
             logger.warning(f"Possible data loss detected in data for job: {self._job_id}")
 
-        return cast(numpy.typing.NDArray[numpy.generic], numpy.load(writer))  # type: ignore[no-untyped-call]
+        return cast(numpy.typing.NDArray[numpy.generic], numpy.load(writer))
 
     def _fetch_all_job_results(self, header: NamedJobResultHeader, start: int, stop: int) -> BinaryIO:
         self._count_data_written = 0

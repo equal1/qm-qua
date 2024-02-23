@@ -125,3 +125,6 @@ class BaseApi:
     @classmethod
     def from_api(cls: Type[R], other: "BaseApi") -> R:
         return cls(other._connection_details)
+
+    def __del__(self) -> None:
+        self.channel.close()

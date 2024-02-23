@@ -1,10 +1,10 @@
 import logging
-
-# import warnings
+import warnings
 import contextlib
 import dataclasses
 from enum import Enum
 from time import perf_counter
+from functools import lru_cache
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Iterator, Optional, cast
 
@@ -19,6 +19,7 @@ from octave_sdk.grpc.quantummachines.octave.api.v1 import (
 )
 from octave_sdk import (
     IFMode,
+    Octave,
     ClockType,
     OctaveOutput,
     RFOutputMode,
@@ -29,12 +30,15 @@ from octave_sdk import (
 )
 
 from qm.type_hinting import Number
-from qm.exceptions import OpenQmException
+from qm.utils.config_utils import get_fem_config
+from qm.octave.octave_config import QmOctaveConfig
+from qm.type_hinting.config_types import StandardPort
 from qm.octave._calibration_config import _prep_config
 from qm.program._qua_config_to_pb import build_iw_sample
 from qm.api.models.capabilities import ServerCapabilities
+from qm.api.models.server_details import ConnectionDetails
+from qm.exceptions import OpenQmException, OctaveLoopbackError
 from qm.octave._calibration_names import COMMON_OCTAVE_PREFIX, CalibrationElementsNames
-from qm.octave.octave_config import QmOctaveConfig, get_device, _convert_octave_port_to_number
 from qm.octave.octave_mixer_calibration import (
     AutoCalibrationParams,
     DeprecatedCalibrationResult,
@@ -68,21 +72,7 @@ if TYPE_CHECKING:
     from qm.QuantumMachine import QuantumMachine
     from qm.quantum_machines_manager import QuantumMachinesManager
 
-try:
-    from octave_sdk import Octave
-
-    OCTAVE_SDK_LOADED = True
-
-except ModuleNotFoundError:
-    # Error handling
-    OCTAVE_SDK_LOADED = False
-    Octave = None
-
 logger = logging.getLogger(__name__)
-
-
-class OctaveSDKException(Exception):
-    pass
 
 
 class SetFrequencyException(Exception):
@@ -101,7 +91,7 @@ class ClockMode(Enum):
 
 
 @dataclasses.dataclass
-class _OpxPorts:
+class _ControllerPorts:
     I: QuaConfigDacPortReference
     Q: QuaConfigDacPortReference
 
@@ -109,7 +99,7 @@ class _OpxPorts:
         if self.I is None or self.Q is None:
             return False
 
-        return self.I.controller == self.Q.controller
+        return self.I.controller == self.Q.controller and self.I.fem == self.Q.fem
 
 
 @dataclasses.dataclass
@@ -131,50 +121,41 @@ class OctaveManager:
         self._qmm = qmm
         self._capabilities = capabilities
         self._octave_config = config or QmOctaveConfig()
-        self._initialize()
-
         self._upconverted_states: Dict[Tuple[str, int], _UpconvertedState] = {}
 
-    def _initialize(self) -> None:
-        self._octave_clients: Dict[str, Octave] = {}
-        devices = self._octave_config.get_devices()
-
-        if devices is not None and len(devices) > 0:
-            if not OCTAVE_SDK_LOADED:
-                raise OctaveSDKException("Octave sdk is not installed")
-            for device_name in devices:
-                self._octave_clients[device_name] = self._octave_config.get_device(device_name)
+    def get_client(self, name: str) -> Octave:
+        return get_device(
+            connection_info=self._octave_config._devices[name],
+            loop_backs=self._octave_config.get_lo_loopbacks_by_octave(name),
+            octave_name=name,
+            fan=self._octave_config.fan,
+        )
 
     def get_output_port(
         self,
-        opx_i_port: Tuple[str, int],
-        opx_q_port: Tuple[str, int],
-    ) -> Tuple[str, int]:
-        # check both ports are going to the same mixer
-        connections = self._octave_config.get_opx_octave_port_mapping()
-        i_octave_port = connections[opx_i_port]
-        q_octave_port = connections[opx_q_port]
-        if i_octave_port[0] != q_octave_port[0]:
-            raise Exception("I and Q are not connected to the same octave")
-        if i_octave_port[1][-1] != q_octave_port[1][-1]:
-            raise Exception("I and Q are not connected to the same octave input")
+        opx_i_port: StandardPort,
+        opx_q_port: StandardPort,
+    ) -> Optional[Tuple[str, int]]:
+        warnings.warn(
+            "This function is deprecated since 1.1.6 and will be removed in 1.2.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._octave_config.get_octave_input_port(opx_i_port, opx_q_port)
 
-        return i_octave_port[0], _convert_octave_port_to_number(i_octave_port[1])
-
-    def _get_client(self, octave_port: Tuple[str, int]) -> Octave:
-        octave = self._octave_clients[octave_port[0]]
-        return octave
+    def _get_client_from_port(self, octave_port: Tuple[str, int]) -> Octave:
+        return self.get_client(octave_port[0])
 
     def restore_default_state(self, octave_name: str) -> None:
-        self._octave_clients[octave_name].restore_default_state()
+        self.get_client(octave_name).restore_default_state()
 
     def start_batch_mode(self) -> None:
-        for client in self._octave_clients.values():
-            client.start_batch_mode()
+        for octave_name in self._octave_config.get_devices():
+            self.get_client(octave_name).start_batch_mode()
 
     def end_batch_mode(self) -> None:
-        for client in self._octave_clients.values():
-            client.end_batch_mode()
+        for octave_name in self._octave_config.get_devices():
+            self.get_client(octave_name).end_batch_mode()
 
     @contextlib.contextmanager
     def batch_mode(self) -> Iterator[None]:
@@ -213,8 +194,9 @@ class OctaveManager:
         else:
             clock_type, frequency = clock_mode.value
 
-        self._octave_clients[octave_name].set_clock(clock_type, frequency)
-        self._octave_clients[octave_name].save_default_state(only_clock=True)
+        client = self.get_client(octave_name)
+        client.set_clock(clock_type, frequency)
+        client.save_default_state(only_clock=True)
 
     def get_clock(self, octave_name: str) -> ClockInfo:
         """Return the octave clock type and frequency
@@ -225,7 +207,7 @@ class OctaveManager:
         Returns:
             ClockInfo
         """
-        clock = self._octave_clients[octave_name].get_clock()
+        clock = self.get_client(octave_name).get_clock()
         return ClockInfo(clock.clock_type, clock.frequency)
 
     def set_lo_frequency(
@@ -252,7 +234,7 @@ class OctaveManager:
         #     ),
         #     category=DeprecationWarning,
         # )
-        octave = self._get_client(octave_output_port)
+        octave = self._get_client_from_port(octave_output_port)
         octave_name, port_index = octave_output_port
 
         loop_backs = self._octave_config.get_lo_loopbacks_by_octave(octave_name)
@@ -272,7 +254,7 @@ class OctaveManager:
             octave_output_port
             lo_port
         """
-        octave = self._get_client(octave_output_port)
+        octave = self._get_client_from_port(octave_output_port)
         octave.rf_outputs[octave_output_port[1]].set_lo_source(lo_port)
 
     def set_rf_output_mode(self, octave_output_port: Tuple[str, int], switch_mode: RFOutputMode) -> None:
@@ -289,7 +271,7 @@ class OctaveManager:
             octave_output_port
             switch_mode
         """
-        octave = self._get_client(octave_output_port)
+        octave = self._get_client_from_port(octave_output_port)
         index = octave_output_port[1]
         octave.rf_outputs[octave_output_port[1]].set_output(switch_mode)
 
@@ -314,7 +296,7 @@ class OctaveManager:
             gain_in_db
             lo_frequency
         """
-        octave = self._get_client(octave_output_port)
+        octave = self._get_client_from_port(octave_output_port)
         octave.rf_outputs[octave_output_port[1]].set_gain(gain_in_db, lo_frequency)
 
     def set_downconversion_lo_source(
@@ -332,7 +314,7 @@ class OctaveManager:
             lo_frequency
             disable_warning
         """
-        octave = self._get_client(octave_input_port)
+        octave = self._get_client_from_port(octave_input_port)
         octave.rf_inputs[octave_input_port[1]].set_lo_source(lo_source)
         octave.rf_inputs[octave_input_port[1]].set_rf_source(RFInputRFSource.RF_in)
         internal = lo_source == RFInputLOSource.Internal or lo_source == RFInputLOSource.Analyzer
@@ -363,7 +345,7 @@ class OctaveManager:
             if_mode_i
         """
 
-        octave = self._get_client(octave_input_port)
+        octave = self._get_client_from_port(octave_input_port)
         octave.rf_inputs[octave_input_port[1]].set_if_mode_i(if_mode_i)
         octave.rf_inputs[octave_input_port[1]].set_if_mode_q(if_mode_q)
 
@@ -376,7 +358,7 @@ class OctaveManager:
         :return: True on success, False otherwise
         """
         if self._capabilities.supports_octave_reset:
-            return cast(bool, self._octave_clients[octave_name].reset())
+            return cast(bool, self.get_client(octave_name).reset())
         else:
             logger.error("QOP version do not support Octave reset function")
             return False
@@ -520,7 +502,11 @@ class OctaveManager:
                         raise ValueError(f"lo_source {input_config.lo_source} is not supported")
 
                     input_client.set_lo_source(downconversion_lo_source)
-                    if downconversion_lo_source == RFInputLOSource.Internal or downconversion_lo_source in loopbacks:
+                    if (
+                        downconversion_lo_source == RFInputLOSource.Internal
+                        or (downconversion_lo_source == RFInputLOSource.Dmd1LO and OctaveLOSource.Dmd1LO in loopbacks)
+                        or (downconversion_lo_source == RFInputLOSource.Dmd2LO and OctaveLOSource.Dmd2LO in loopbacks)
+                    ):
                         input_client.set_lo_frequency(downconversion_lo_source, input_config.lo_frequency)
                     else:
                         logger.debug(f"Cannot set frequency to an external lo source {downconversion_lo_source.name}")
@@ -603,10 +589,6 @@ def create_lo_to_if_list_mapping(lo_if_frequencies_tuple_list: List[Tuple[int, i
     return lo_to_if_mapping
 
 
-class OctaveLoopbackError(Exception):
-    pass
-
-
 def get_loopbacks_from_pb(
     pb_loopbacks: List[QuaConfigOctaveLoopback], octave_name: str
 ) -> Dict[OctaveLOSource, OctaveOutput]:
@@ -614,7 +596,7 @@ def get_loopbacks_from_pb(
     for loopback in pb_loopbacks:
         source_octave = loopback.lo_source_generator.device_name
         if source_octave != octave_name:
-            raise OctaveLoopbackError("lo loopback between different octave devices are not supported")
+            raise OctaveLoopbackError
         lo_source_input = OctaveLOSource[loopback.lo_source_input.name]
         output_name = loopback.lo_source_generator.port_name.name
         standardized_name = output_name[0].upper() + output_name[1:]
@@ -625,15 +607,17 @@ def get_loopbacks_from_pb(
 
 def _get_octave_channels_to_opx_ports(
     pb_config: QuaConfig, octave_config: QmOctaveConfig
-) -> Dict[str, Dict[int, _OpxPorts]]:
+) -> Dict[str, Dict[int, _ControllerPorts]]:
     """# octave_id -> (channel -> _OpxPorts)"""
 
     def is_dac_declared(dac: QuaConfigDacPortReference) -> bool:
-        return dac.controller in pb_config.v1_beta.controllers and (
-            dac.number in pb_config.v1_beta.controllers[dac.controller].analog_outputs
-        )
+        try:
+            controller_config = get_fem_config(pb_config, dac)
+        except KeyError:
+            return False
+        return dac.number in controller_config.analog_outputs
 
-    all_octave_channels: Dict[str, Dict[int, _OpxPorts]] = defaultdict(dict)
+    all_octave_channels: Dict[str, Dict[int, _ControllerPorts]] = defaultdict(dict)
     opx_octave_port_mapping = octave_config.get_opx_octave_port_mapping()
     octave_opx_port_mapping = {v: k for k, v in opx_octave_port_mapping.items()}
     octave_names = {v[0] for v in octave_opx_port_mapping}
@@ -641,20 +625,22 @@ def _get_octave_channels_to_opx_ports(
         for channel_index in range(1, 6):
             i_key, q_key = (octave_name, f"I{channel_index}"), (octave_name, f"Q{channel_index}")
             if i_key in octave_opx_port_mapping and q_key in octave_opx_port_mapping:
-                all_octave_channels[octave_name][channel_index] = _OpxPorts(
-                    I=QuaConfigDacPortReference(*octave_opx_port_mapping[i_key]),
-                    Q=QuaConfigDacPortReference(*octave_opx_port_mapping[q_key]),
+                con_i, fem_i, idx_i = octave_opx_port_mapping[i_key]
+                con_q, fem_q, idx_q = octave_opx_port_mapping[q_key]
+                all_octave_channels[octave_name][channel_index] = _ControllerPorts(
+                    I=QuaConfigDacPortReference(controller=con_i, fem=fem_i, number=idx_i),
+                    Q=QuaConfigDacPortReference(controller=con_q, fem=fem_q, number=idx_q),
                 )
 
     for octave_name, octave_pb_config in pb_config.v1_beta.octaves.items():
         all_octave_channels[octave_name] = {}
         for upconverter_index, upconverter_config in octave_pb_config.rf_outputs.items():
-            all_octave_channels[octave_name][upconverter_index] = _OpxPorts(
+            all_octave_channels[octave_name][upconverter_index] = _ControllerPorts(
                 I=upconverter_config.i_connection,
                 Q=upconverter_config.q_connection,
             )
 
-    to_return: Dict[str, Dict[int, _OpxPorts]] = {}
+    to_return: Dict[str, Dict[int, _ControllerPorts]] = {}
     for octave_name, octave_channels in all_octave_channels.items():
         to_return[octave_name] = {}
         for channel_index, opx_ports in octave_channels.items():
@@ -669,12 +655,14 @@ def prep_config_for_calibration(
 ) -> QuaConfig:
     all_octave_channels = _get_octave_channels_to_opx_ports(pb_config, octave_config)
     for octave_channels in all_octave_channels.values():
-        for opx_ports in octave_channels.values():
-            if opx_ports.valid():
-                if set(pb_config.v1_beta.controllers[opx_ports.I.controller].analog_inputs) != {1, 2}:
+        for controller_ports in octave_channels.values():
+            if controller_ports.valid():
+                controller_config = get_fem_config(pb_config, controller_ports.I)
+                if set(controller_config.analog_inputs) != {1, 2}:
                     logger.warning(
-                        f"Controller '{opx_ports.I.controller}' does not have exactly two input channels "
-                        f"declared in the qua-config and is needed for the calibration, not adding calibration elements"
+                        f"Controller '{controller_ports.I.controller}', {controller_ports.I.fem} does not have exactly two input "
+                        f"channels declared in the QUA-config and is needed for the calibration, "
+                        f"not adding calibration elements"
                     )
                     return pb_config
 
@@ -700,13 +688,13 @@ def prep_config_for_calibration(
 
     any_valid_channels = False
     for octave_name, octave_channels in all_octave_channels.items():
-        for channel_index, opx_ports in octave_channels.items():
+        for channel_index, controller_ports in octave_channels.items():
             names = CalibrationElementsNames(octave_name, channel_index)
-            if opx_ports.valid():
+            if controller_ports.valid():
                 any_valid_channels = True
                 mix_inputs = QuaConfigMixInputs(
-                    i=opx_ports.I,
-                    q=opx_ports.Q,
+                    i=controller_ports.I,
+                    q=controller_ports.Q,
                     lo_frequency=int(dummy_lo_frequency),
                     lo_frequency_double=[0.0, float(dummy_lo_frequency)][frequency_idx],
                     mixer=f"{COMMON_OCTAVE_PREFIX}dummy_mixer",
@@ -720,14 +708,30 @@ def prep_config_for_calibration(
                         mix_inputs=mix_inputs,
                         operations={"Analyze": f"{COMMON_OCTAVE_PREFIX}Analyze_pulse"},
                         outputs={
-                            "out1": QuaConfigAdcPortReference(opx_ports.I.controller, 1),
-                            "out2": QuaConfigAdcPortReference(opx_ports.Q.controller, 2),
+                            "out1": QuaConfigAdcPortReference(
+                                controller=controller_ports.I.controller, fem=controller_ports.I.fem, number=1
+                            ),
+                            "out2": QuaConfigAdcPortReference(
+                                controller=controller_ports.Q.controller, fem=controller_ports.Q.fem, number=2
+                            ),
                         },
                         time_of_flight=time_of_flight,
                         smearing=0,
                     )
 
                 # 1. Add the required elements (IQmixer, [IQ]_offset, [signal/lo/image]_analyzer)
+                i_offset = QuaConfigElementDec(
+                    single_input=QuaConfigSingleInput(port=controller_ports.I),
+                    operations={"DC_offset": f"{COMMON_OCTAVE_PREFIX}DC_offset_pulse"},
+                )
+                q_offset = QuaConfigElementDec(
+                    single_input=QuaConfigSingleInput(port=controller_ports.Q),
+                    operations={"DC_offset": f"{COMMON_OCTAVE_PREFIX}DC_offset_pulse"},
+                )
+                # TODO - remove this and the capability once we fix the bug in the OPY of the CSF allocation
+                if capabilities.set_zero_frequency_in_calibration:
+                    i_offset.intermediate_frequency = 0
+                    q_offset.intermediate_frequency = 0
                 pb_config.v1_beta.elements.update(
                     {
                         names.iq_mixer: QuaConfigElementDec(
@@ -737,14 +741,8 @@ def prep_config_for_calibration(
                             operations={"calibration": f"{COMMON_OCTAVE_PREFIX}calibration_pulse"},
                             digital_inputs={},  # This is being added afterward
                         ),
-                        names.i_offset: QuaConfigElementDec(
-                            single_input=QuaConfigSingleInput(port=opx_ports.I),
-                            operations={"DC_offset": f"{COMMON_OCTAVE_PREFIX}DC_offset_pulse"},
-                        ),
-                        names.q_offset: QuaConfigElementDec(
-                            single_input=QuaConfigSingleInput(port=opx_ports.Q),
-                            operations={"DC_offset": f"{COMMON_OCTAVE_PREFIX}DC_offset_pulse"},
-                        ),
+                        names.i_offset: i_offset,
+                        names.q_offset: q_offset,
                         names.signal_analyzer: create_analyzer_element(dummy_if_frequency - dummy_down_mixer_offset),
                         names.lo_analyzer: create_analyzer_element(-dummy_down_mixer_offset),
                         names.image_analyzer: create_analyzer_element(-dummy_if_frequency - dummy_down_mixer_offset),
@@ -860,3 +858,35 @@ def _create_lo_to_if_mapping(lo_if_frequencies_tuple_list: List[Tuple[int, int]]
     for lo_freq, if_freq in lo_if_frequencies_tuple_list:
         lo_to_if_mapping[float(lo_freq)] += (if_freq,)
     return dict(lo_to_if_mapping)
+
+
+@lru_cache(maxsize=None)
+def _cached_get_device(
+    connection_info: ConnectionDetails,
+    loop_backs: Tuple[Tuple[OctaveLOSource, OctaveOutput], ...],
+    octave_name: str,
+) -> Octave:
+    standardized_loop_backs = {input_port: output_port for input_port, output_port in loop_backs}
+    return Octave(
+        host=connection_info.host,
+        port=connection_info.port,
+        port_mapping=standardized_loop_backs,
+        octave_name=octave_name,
+        connection_headers=connection_info.headers,
+    )
+
+
+def get_device(
+    connection_info: ConnectionDetails,
+    loop_backs: Dict[OctaveLOSource, OctaveOutput],
+    octave_name: str,
+    fan: Any = None,
+) -> Octave:
+    client = _cached_get_device(
+        connection_info,
+        loop_backs=tuple(sorted(loop_backs.items(), key=lambda u: (u[0].name, u[1].name))),
+        octave_name=octave_name,
+    )
+    if fan is not None:
+        client._set_fan(fan)
+    return client

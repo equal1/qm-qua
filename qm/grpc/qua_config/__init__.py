@@ -21,6 +21,23 @@ class QuaConfigOutputSwitchState(betterproto.Enum):
     triggered_reversed = 4
 
 
+class QuaConfigOctoDacAnalogOutputPortDecOutputMode(betterproto.Enum):
+    direct = 0
+    amplified = 1
+
+
+class QuaConfigOctoDacAnalogOutputPortDecSamplingRate(betterproto.Enum):
+    Undefined = 0
+    GSPS1 = 1
+    GSPS2 = 2
+
+
+class QuaConfigOctoDacAnalogOutputPortDecSamplingRateMode(betterproto.Enum):
+    unset = 0
+    mw = 1
+    pulse = 2
+
+
 class QuaConfigDigitalInputPortDecPolarity(betterproto.Enum):
     RISING = 0
     FALLING = 1
@@ -101,8 +118,8 @@ class QuaConfigQuaConfigV1(betterproto.Message):
     controllers: Dict[str, "QuaConfigControllerDec"] = betterproto.map_field(
         2, betterproto.TYPE_STRING, betterproto.TYPE_MESSAGE
     )
-    controller_types: Dict[str, "QuaConfigControllerTypeDec"] = betterproto.map_field(
-        10, betterproto.TYPE_STRING, betterproto.TYPE_MESSAGE
+    control_devices: Dict[str, "QuaConfigDeviceDec"] = betterproto.map_field(
+        20, betterproto.TYPE_STRING, betterproto.TYPE_MESSAGE
     )
     oscillators: Dict[str, "QuaConfigOscillator"] = betterproto.map_field(
         9, betterproto.TYPE_STRING, betterproto.TYPE_MESSAGE
@@ -138,6 +155,23 @@ class QuaConfigQuaConfigV1(betterproto.Message):
 
 
 @dataclass(eq=False, repr=False)
+class QuaConfigDeviceDec(betterproto.Message):
+    fems: Dict[int, "QuaConfigFemTypes"] = betterproto.map_field(
+        1, betterproto.TYPE_UINT32, betterproto.TYPE_MESSAGE
+    )
+
+
+@dataclass(eq=False, repr=False)
+class QuaConfigFemTypes(betterproto.Message):
+    opx: "QuaConfigControllerDec" = betterproto.message_field(
+        1, group="fem_type_one_of"
+    )
+    octo_dac: "QuaConfigOctoDacFemDec" = betterproto.message_field(
+        2, group="fem_type_one_of"
+    )
+
+
+@dataclass(eq=False, repr=False)
 class QuaConfigControllerDec(betterproto.Message):
     type: str = betterproto.string_field(1)
     analog_outputs: Dict[int, "QuaConfigAnalogOutputPortDec"] = betterproto.map_field(
@@ -155,25 +189,19 @@ class QuaConfigControllerDec(betterproto.Message):
 
 
 @dataclass(eq=False, repr=False)
-class QuaConfigControllerTypeDec(betterproto.Message):
-    opx: "QuaConfigOpxControllerDec" = betterproto.message_field(
-        1, group="controller_type_one_of"
+class QuaConfigOctoDacFemDec(betterproto.Message):
+    analog_outputs: Dict[
+        int, "QuaConfigOctoDacAnalogOutputPortDec"
+    ] = betterproto.map_field(2, betterproto.TYPE_UINT32, betterproto.TYPE_MESSAGE)
+    analog_inputs: Dict[int, "QuaConfigAnalogInputPortDec"] = betterproto.map_field(
+        3, betterproto.TYPE_UINT32, betterproto.TYPE_MESSAGE
     )
-    opx_plus: "QuaConfigOpxPlusControllerDec" = betterproto.message_field(
-        2, group="controller_type_one_of"
+    digital_outputs: Dict[int, "QuaConfigDigitalOutputPortDec"] = betterproto.map_field(
+        4, betterproto.TYPE_UINT32, betterproto.TYPE_MESSAGE
     )
-
-
-@dataclass(eq=False, repr=False)
-class QuaConfigOpxControllerDec(betterproto.Message):
-    controller: "QuaConfigControllerDec" = betterproto.message_field(1)
-    controller_name: str = betterproto.string_field(2)
-
-
-@dataclass(eq=False, repr=False)
-class QuaConfigOpxPlusControllerDec(betterproto.Message):
-    controller: "QuaConfigControllerDec" = betterproto.message_field(1)
-    controller_name: str = betterproto.string_field(2)
+    digital_inputs: Dict[int, "QuaConfigDigitalInputPortDec"] = betterproto.map_field(
+        5, betterproto.TYPE_UINT32, betterproto.TYPE_MESSAGE
+    )
 
 
 @dataclass(eq=False, repr=False)
@@ -196,6 +224,26 @@ class QuaConfigAnalogOutputPortDec(betterproto.Message):
                 "QuaConfigAnalogOutputPortDec.channel_weights is deprecated",
                 DeprecationWarning,
             )
+
+
+@dataclass(eq=False, repr=False)
+class QuaConfigOctoDacAnalogOutputPortDec(betterproto.Message):
+    offset: float = betterproto.double_field(1)
+    filter: "QuaConfigAnalogOutputPortFilter" = betterproto.message_field(2)
+    delay: int = betterproto.uint32_field(3)
+    shareable: bool = betterproto.bool_field(5)
+    crosstalk: Dict[int, float] = betterproto.map_field(
+        6, betterproto.TYPE_UINT32, betterproto.TYPE_DOUBLE
+    )
+    sampling_rate: "QuaConfigOctoDacAnalogOutputPortDecSamplingRate" = (
+        betterproto.enum_field(7)
+    )
+    upsampling_mode: "QuaConfigOctoDacAnalogOutputPortDecSamplingRateMode" = (
+        betterproto.enum_field(8)
+    )
+    output_mode: "QuaConfigOctoDacAnalogOutputPortDecOutputMode" = (
+        betterproto.enum_field(9)
+    )
 
 
 @dataclass(eq=False, repr=False)
@@ -432,12 +480,14 @@ class QuaConfigSticky(betterproto.Message):
 class QuaConfigDacPortReference(betterproto.Message):
     controller: str = betterproto.string_field(1)
     number: int = betterproto.uint32_field(2)
+    fem: int = betterproto.uint32_field(3)
 
 
 @dataclass(eq=False, repr=False)
 class QuaConfigAdcPortReference(betterproto.Message):
     controller: str = betterproto.string_field(1)
     number: int = betterproto.uint32_field(2)
+    fem: int = betterproto.uint32_field(3)
 
 
 @dataclass(eq=False, repr=False)
@@ -456,6 +506,7 @@ class QuaConfigDigitalOutputPortReference(betterproto.Message):
 class QuaConfigPortReference(betterproto.Message):
     controller: str = betterproto.string_field(1)
     number: int = betterproto.uint32_field(2)
+    fem: int = betterproto.uint32_field(3)
 
 
 @dataclass(eq=False, repr=False)

@@ -1,9 +1,9 @@
-from typing import Dict, List, Tuple, Union
-from typing_extensions import Literal, TypedDict
+from typing import List, Tuple, Union, Literal, Mapping, TypedDict
 
 from qm.type_hinting.general import Number
 
-PortReferenceType = Tuple[str, int]
+StandardPort = Tuple[str, int, int]
+PortReferenceType = Union[Tuple[str, int], StandardPort]
 
 
 # TODO: This is a placeholder while we still use dicts, once we move to pydantics we can simply change the
@@ -19,7 +19,7 @@ class AnalogOutputPortConfigType(TypedDict, total=False):
     offset: Number
     filter: AnalogOutputFilterConfigType
     delay: int
-    crosstalk: Dict[int, Number]
+    crosstalk: Mapping[int, Number]
     shareable: bool
 
 
@@ -30,22 +30,42 @@ class AnalogInputPortConfigType(TypedDict, total=False):
 
 
 class DigitalOutputPortConfigType(TypedDict, total=False):
-    sharable: bool
+    shareable: bool
     inverted: bool
 
 
 class DigitalInputPortConfigType(TypedDict, total=False):
+    shareable: bool
     deadtime: int
     polarity: Literal["RISING", "FALLING"]
     threshold: Number
 
 
+class AnalogOutputPortConfigTypeOctoDac(TypedDict, total=False):
+    offset: Number
+    filter: AnalogOutputFilterConfigType
+    delay: int
+    crosstalk: Mapping[int, Number]
+    shareable: bool
+    connectivity: Tuple[str, str]
+    sampling_rate: float
+    upsampling_mode: Literal["mw", "pulse"]
+    output_mode: Literal["direct", "amplified"]
+
+
+class FemConfigType(TypedDict, total=False):
+    analog_outputs: Mapping[int, AnalogOutputPortConfigTypeOctoDac]
+    analog_inputs: Mapping[int, AnalogInputPortConfigType]
+    digital_outputs: Mapping[int, DigitalOutputPortConfigType]
+    digital_inputs: Mapping[int, DigitalInputPortConfigType]
+
+
 class ControllerConfigType(TypedDict, total=False):
-    type: str
-    analog_outputs: Dict[int, AnalogOutputPortConfigType]
-    analog_inputs: Dict[int, AnalogInputPortConfigType]
-    digital_outputs: Dict[int, DigitalOutputPortConfigType]
-    digital_inputs: Dict[int, DigitalInputPortConfigType]
+    type: Literal["opx", "opx1"]
+    analog_outputs: Mapping[int, AnalogOutputPortConfigType]
+    analog_inputs: Mapping[int, AnalogInputPortConfigType]
+    digital_outputs: Mapping[int, DigitalOutputPortConfigType]
+    digital_inputs: Mapping[int, DigitalInputPortConfigType]
 
 
 class OctaveRFOutputConfigType(TypedDict, total=False):
@@ -76,16 +96,22 @@ class OctaveIfOutputsConfigType(TypedDict, total=False):
     IF_out2: OctaveSingleIfOutputConfigType
 
 
+class OPX1000ControllerConfigType(TypedDict, total=False):
+    type: Literal["opx1000"]
+    fems: Mapping[int, FemConfigType]
+
+
+LoopbackType = Tuple[
+    Tuple[str, Literal["Synth1", "Synth2", "Synth3", "Synth4", "Synth5"]],
+    Literal["Dmd1LO", "Dmd2LO", "LO1", "LO2", "LO3", "LO4", "LO5"],
+]
+
+
 class OctaveConfigType(TypedDict, total=False):
-    RF_outputs: Dict[int, OctaveRFOutputConfigType]
-    RF_inputs: Dict[int, OctaveRFInputConfigType]
+    RF_outputs: Mapping[int, OctaveRFOutputConfigType]
+    RF_inputs: Mapping[int, OctaveRFInputConfigType]
     IF_outputs: OctaveIfOutputsConfigType
-    loopbacks: List[
-        Tuple[
-            Tuple[str, Literal["Synth1", "Synth2", "Synth3", "Synth4", "Synth5"]],
-            Literal["Dmd1LO", "Dmd2LO", "LO1", "LO2", "LO3", "LO4", "LO5"],
-        ],
-    ]
+    loopbacks: List[LoopbackType]
     connectivity: str
 
 
@@ -103,6 +129,12 @@ class IntegrationWeightConfigType(TypedDict, total=False):
 class ConstantWaveFormConfigType(TypedDict, total=False):
     type: Literal["constant"]
     sample: float
+
+
+class CompressedWaveFormConfigType(TypedDict, total=False):
+    type: str
+    samples: List[float]
+    sample_rate: float
 
 
 class ArbitraryWaveFormConfigType(TypedDict, total=False):
@@ -126,9 +158,9 @@ class MixerConfigType(TypedDict, total=False):
 class PulseConfigType(TypedDict, total=False):
     operation: str
     length: int
-    waveforms: Dict[str, str]
+    waveforms: Mapping[str, str]
     digital_marker: str
-    integration_weights: Dict[str, str]
+    integration_weights: Mapping[str, str]
 
 
 class SingleInputConfigType(TypedDict, total=False):
@@ -153,7 +185,7 @@ class MixInputConfigType(TypedDict, total=False):
 
 
 class InputCollectionConfigType(TypedDict, total=False):
-    inputs: Dict[str, PortReferenceType]
+    inputs: Mapping[str, PortReferenceType]
 
 
 class OscillatorConfigType(TypedDict, total=False):
@@ -173,32 +205,34 @@ class ElementConfigType(TypedDict, total=False):
     intermediate_frequency: float
     oscillator: str
     measurement_qe: str
-    operations: Dict[str, str]
+    operations: Mapping[str, str]
     singleInput: SingleInputConfigType
     mixInputs: MixInputConfigType
     singleInputCollection: InputCollectionConfigType
     multipleInputs: InputCollectionConfigType
     time_of_flight: int
     smearing: int
-    outputs: Dict[str, PortReferenceType]
-    digitalInputs: Dict[str, DigitalInputConfigType]
-    digitalOutputs: Dict[str, PortReferenceType]
+    outputs: Mapping[str, PortReferenceType]
+    digitalInputs: Mapping[str, DigitalInputConfigType]
+    digitalOutputs: Mapping[str, PortReferenceType]
     outputPulseParameters: OutputPulseParameterConfigType
     hold_offset: HoldOffsetConfigType
     sticky: StickyConfigType
     thread: str
-    RF_inputs: Dict[str, PortReferenceType]
-    RF_outputs: Dict[str, PortReferenceType]
+    RF_inputs: Mapping[str, Tuple[str, int]]
+    RF_outputs: Mapping[str, Tuple[str, int]]
 
 
 class DictQuaConfig(TypedDict, total=False):
     version: int
-    oscillators: Dict[str, OscillatorConfigType]
-    elements: Dict[str, ElementConfigType]
-    controllers: Dict[str, ControllerConfigType]
-    octaves: Dict[str, OctaveConfigType]
-    integration_weights: Dict[str, IntegrationWeightConfigType]
-    waveforms: Dict[str, Union[ArbitraryWaveFormConfigType, ConstantWaveFormConfigType]]
-    digital_waveforms: Dict[str, DigitalWaveformConfigType]
-    pulses: Dict[str, PulseConfigType]
-    mixers: Dict[str, List[MixerConfigType]]
+    oscillators: Mapping[str, OscillatorConfigType]
+    elements: Mapping[str, ElementConfigType]
+    controllers: Mapping[str, Union[ControllerConfigType, OPX1000ControllerConfigType]]
+    octaves: Mapping[str, OctaveConfigType]
+    integration_weights: Mapping[str, IntegrationWeightConfigType]
+    waveforms: Mapping[
+        str, Union[ArbitraryWaveFormConfigType, ConstantWaveFormConfigType, CompressedWaveFormConfigType]
+    ]
+    digital_waveforms: Mapping[str, DigitalWaveformConfigType]
+    pulses: Mapping[str, PulseConfigType]
+    mixers: Mapping[str, List[MixerConfigType]]

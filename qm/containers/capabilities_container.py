@@ -22,6 +22,7 @@ def create_capabilities_container(
             "qm.program._qua_config_schema",
             "qm.program._qua_config_to_pb",
             "qm.api.job_manager_api",
+            "qm.simulate.interface",
         ],
         packages=["qm.elements"],
     )

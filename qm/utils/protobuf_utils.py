@@ -1,11 +1,11 @@
 import logging
 import dataclasses
-from typing import Dict, Union, Iterable
+from typing_extensions import runtime_checkable
+from typing import Dict, Union, Iterable, Protocol, cast
 
 import betterproto
 
 from qm.grpc.general_messages import MessageLevel
-from qm.type_hinting.general import DataClassType
 
 LOG_LEVEL_MAP = {
     MessageLevel.Message_LEVEL_ERROR: logging.ERROR,
@@ -14,10 +14,17 @@ LOG_LEVEL_MAP = {
 }
 
 
-def list_fields(node: DataClassType) -> Dict[str, Union[betterproto.Message, Iterable[betterproto.Message]]]:
-    fields = dataclasses.fields(
-        node
-    )  # This type warining is OK, python are idiots and has no builtin type for dataclasses.
+Node = Union[betterproto.Message, Iterable["Node"]]
+
+
+@runtime_checkable
+@dataclasses.dataclass
+class DataclassProtocol(Protocol):
+    pass
+
+
+def list_fields(node: Node) -> Dict[str, Node]:
+    fields = dataclasses.fields(cast(DataclassProtocol, node))
     output = {}
     for field in fields:
         field_value = getattr(node, field.name)

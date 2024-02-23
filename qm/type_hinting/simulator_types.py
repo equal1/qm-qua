@@ -1,5 +1,4 @@
-from typing_extensions import TypedDict
-from typing import Set, Dict, List, Optional
+from typing import Set, Dict, List, Optional, TypedDict
 
 
 class PulserLocationType(TypedDict, total=False):

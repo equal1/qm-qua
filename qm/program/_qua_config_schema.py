@@ -1,16 +1,14 @@
 import logging
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Tuple, Union, Mapping, TypeVar, Optional, TypedDict, cast, overload
 
 import betterproto
-import numpy as np
-from marshmallow_polyfield import PolyField
 from betterproto.lib.google.protobuf import Empty
 from dependency_injector.wiring import Provide, inject
+from marshmallow_polyfield import PolyField  # type: ignore[import-untyped]
 from marshmallow import Schema, ValidationError, fields, validate, post_load, validates_schema
 
-from qm.grpc import qua_config
-from qm.type_hinting.config_types import DictQuaConfig
-from qm.api.models.capabilities import ServerCapabilities
+from qm.utils.config_utils import get_fem_config_instance
+from qm.api.models.capabilities import OPX_FEM_IDX, ServerCapabilities
 from qm.containers.capabilities_container import CapabilitiesContainer
 from qm.exceptions import InvalidOctaveParameter, ConfigValidationException, OctaveConnectionAmbiguity
 from qm.program._validate_config_schema import (
@@ -22,46 +20,153 @@ from qm.program._validate_config_schema import (
     validate_arbitrary_waveform,
     validate_timetagging_parameters,
 )
-from qm.grpc.qua_config import (
-    QuaConfig,
-    QuaConfigOctaveConfig,
-    QuaConfigAdcPortReference,
-    QuaConfigOctaveLoSourceInput,
-    QuaConfigOctaveRfInputConfig,
-    QuaConfigGeneralPortReference,
-    QuaConfigOctaveRfOutputConfig,
-    QuaConfigOctaveIfOutputsConfig,
-    QuaConfigAnalogOutputPortFilter,
-    QuaConfigOctaveSingleIfOutputConfig,
-    QuaConfigOctaveDownconverterRfSource,
-)
 from qm.program._qua_config_to_pb import (
     IF_OUT1_DEFAULT,
     IF_OUT2_DEFAULT,
     rf_input_to_pb,
+    build_iw_sample,
     rf_module_to_pb,
     dac_port_ref_to_pb,
     get_octave_loopbacks,
     single_if_output_to_pb,
+    _all_controllers_are_opx,
+    create_sampling_rate_enum,
+    _get_port_reference_with_fem,
     validate_inputs_or_outputs_exist,
     set_non_existing_mixers_in_mix_input_elements,
     set_octave_upconverter_connection_to_elements,
     set_octave_downconverter_connection_to_elements,
     set_lo_frequency_to_mix_input_elements_that_are_connected_to_octave,
 )
+from qm.type_hinting.config_types import (
+    LoopbackType,
+    DictQuaConfig,
+    MixerConfigType,
+    PulseConfigType,
+    StickyConfigType,
+    ElementConfigType,
+    PortReferenceType,
+    MixInputConfigType,
+    HoldOffsetConfigType,
+    OscillatorConfigType,
+    SingleInputConfigType,
+    DigitalInputConfigType,
+    OctaveRFInputConfigType,
+    OctaveRFOutputConfigType,
+    AnalogInputPortConfigType,
+    DigitalWaveformConfigType,
+    InputCollectionConfigType,
+    AnalogOutputPortConfigType,
+    ConstantWaveFormConfigType,
+    DigitalInputPortConfigType,
+    ArbitraryWaveFormConfigType,
+    DigitalOutputPortConfigType,
+    IntegrationWeightConfigType,
+    OctaveSingleIfOutputConfigType,
+    OutputPulseParameterConfigType,
+    AnalogOutputPortConfigTypeOctoDac,
+)
+from qm.grpc.qua_config import (
+    QuaConfig,
+    QuaConfigMatrix,
+    QuaConfigSticky,
+    QuaConfigFemTypes,
+    QuaConfigMixerDec,
+    QuaConfigPulseDec,
+    QuaConfigDeviceDec,
+    QuaConfigMixInputs,
+    QuaConfigElementDec,
+    QuaConfigHoldOffset,
+    QuaConfigOscillator,
+    QuaConfigQuaConfigV1,
+    QuaConfigSingleInput,
+    QuaConfigWaveformDec,
+    QuaConfigOctaveConfig,
+    QuaConfigControllerDec,
+    QuaConfigOctoDacFemDec,
+    QuaConfigPortReference,
+    QuaConfigMultipleInputs,
+    QuaConfigCorrectionEntry,
+    QuaConfigAdcPortReference,
+    QuaConfigDacPortReference,
+    QuaConfigPulseDecOperation,
+    QuaConfigAnalogInputPortDec,
+    QuaConfigDigitalWaveformDec,
+    QuaConfigAnalogOutputPortDec,
+    QuaConfigConstantWaveformDec,
+    QuaConfigDigitalInputPortDec,
+    QuaConfigOctaveLoSourceInput,
+    QuaConfigOctaveRfInputConfig,
+    QuaConfigArbitraryWaveformDec,
+    QuaConfigDigitalOutputPortDec,
+    QuaConfigGeneralPortReference,
+    QuaConfigIntegrationWeightDec,
+    QuaConfigOctaveRfOutputConfig,
+    QuaConfigDigitalWaveformSample,
+    QuaConfigOctaveIfOutputsConfig,
+    QuaConfigSingleInputCollection,
+    QuaConfigAnalogOutputPortFilter,
+    QuaConfigDigitalInputPortReference,
+    QuaConfigDigitalOutputPortReference,
+    QuaConfigOctaveSingleIfOutputConfig,
+    QuaConfigOctoDacAnalogOutputPortDec,
+    QuaConfigDigitalInputPortDecPolarity,
+    QuaConfigOctaveDownconverterRfSource,
+    QuaConfigOutputPulseParametersPolarity,
+    QuaConfigOctoDacAnalogOutputPortDecOutputMode,
+    QuaConfigOctoDacAnalogOutputPortDecSamplingRate,
+    QuaConfigOctoDacAnalogOutputPortDecSamplingRateMode,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def validate_config_capabilities(pb_config, server_capabilities: ServerCapabilities):
+def _get_port_address(controller_name: str, fem_idx: Optional[int], port_id: int) -> str:
+    if fem_idx is not None:
+        return f"controller: {controller_name}, fem: {fem_idx}, port: {port_id}"
+    return f"controller: {controller_name}, port: {port_id}"
+
+
+def _validate_no_inverted_port(
+    controller: Union[QuaConfigControllerDec, QuaConfigOctoDacFemDec],
+    controller_name: str,
+    fem_idx: int,
+) -> None:
+    for port_id, port in controller.digital_outputs.items():
+        if port.inverted:
+            address = _get_port_address(controller_name, fem_idx, port_id)
+            raise ConfigValidationException(f"Server does not support inverted digital output used in {address}")
+
+
+def _validate_no_analog_delay(
+    controller: Union[QuaConfigControllerDec, QuaConfigOctoDacFemDec],
+    controller_name: str,
+    fem_idx: int,
+) -> None:
+    for port_id, port in controller.analog_outputs.items():
+        if port.delay != 0:
+            address = _get_port_address(controller_name, fem_idx, port_id)
+            raise ConfigValidationException(f"Server does not support analog delay used in {address}")
+
+
+def validate_no_crosstalk(
+    controller: Union[QuaConfigControllerDec, QuaConfigOctoDacFemDec],
+    controller_name: str,
+    fem_idx: int,
+) -> None:
+    for port_id, port in controller.analog_outputs.items():
+        if len(port.crosstalk) > 0:
+            address = _get_port_address(controller_name, fem_idx, port_id)
+            raise ConfigValidationException(f"Server does not support channel weights used in {address}")
+
+
+def validate_config_capabilities(pb_config: QuaConfig, server_capabilities: ServerCapabilities) -> None:
     if not server_capabilities.supports_inverted_digital_output:
-        for con_name, con in pb_config.v1_beta.controllers.items():
-            for port_id, port in con.digital_outputs.items():
-                if port.inverted:
-                    raise ConfigValidationException(
-                        f"Server does not support inverted digital output used in controller "
-                        f"'{con_name}', port {port_id}"
-                    )
+        for con_name, con in pb_config.v1_beta.control_devices.items():
+            for fem_name, fem in con.fems.items():
+                fem_config = get_fem_config_instance(fem)
+                _validate_no_inverted_port(fem_config, controller_name=con_name, fem_idx=fem_name)
+
     if not server_capabilities.supports_multiple_inputs_for_element:
         for el_name, el in pb_config.v1_beta.elements.items():
             if el is not None and el.multiple_inputs:
@@ -70,12 +175,10 @@ def validate_config_capabilities(pb_config, server_capabilities: ServerCapabilit
                 )
 
     if not server_capabilities.supports_analog_delay:
-        for con_name, con in pb_config.v1_beta.controllers.items():
-            for port_id, port in con.analog_outputs.items():
-                if port.delay != 0:
-                    raise ConfigValidationException(
-                        f"Server does not support analog delay used in controller " f"'{con_name}', port {port_id}"
-                    )
+        for con_name, con in pb_config.v1_beta.control_devices.items():
+            for fem_idx, fem in con.fems.items():
+                fem_config = get_fem_config_instance(fem)
+                _validate_no_analog_delay(fem_config, controller_name=con_name, fem_idx=fem_idx)
 
     if not server_capabilities.supports_shared_oscillators:
         for el_name, el in pb_config.v1_beta.elements.items():
@@ -85,31 +188,32 @@ def validate_config_capabilities(pb_config, server_capabilities: ServerCapabilit
                 )
 
     if not server_capabilities.supports_crosstalk:
-        for con_name, con in pb_config.v1_beta.controllers.items():
-            for port_id, port in con.analog_outputs.items():
-                if len(port.crosstalk) > 0:
-                    raise ConfigValidationException(
-                        f"Server does not support channel weights used in controller " f"'{con_name}', port {port_id}"
-                    )
+        for con_name, con in pb_config.v1_beta.control_devices.items():
+            for fem_idx, fem in con.fems.items():
+                fem_config = get_fem_config_instance(fem)
+                validate_no_crosstalk(fem_config, controller_name=con_name, fem_idx=fem_idx)
 
     if not server_capabilities.supports_shared_ports:
         shared_ports_by_controller = {}
-        for con_name, con in pb_config.v1_beta.controllers.items():
-            shared_ports_by_type = {}
-            analog_outputs = [port_id for port_id, port in con.analog_outputs.items() if port.shareable]
-            analog_inputs = [port_id for port_id, port in con.analog_inputs.items() if port.shareable]
-            digital_outputs = [port_id for port_id, port in con.digital_outputs.items() if port.shareable]
-            digital_inputs = [port_id for port_id, port in con.digital_inputs.items() if port.shareable]
-            if len(analog_outputs):
-                shared_ports_by_type["analog_outputs"] = analog_outputs
-            if len(analog_inputs):
-                shared_ports_by_type["analog_inputs"] = analog_inputs
-            if len(digital_outputs):
-                shared_ports_by_type["digital_outputs"] = digital_outputs
-            if len(digital_inputs):
-                shared_ports_by_type["digital_inputs"] = digital_inputs
-            if len(shared_ports_by_type):
-                shared_ports_by_controller[con_name] = shared_ports_by_type
+        for con_name, con in pb_config.v1_beta.control_devices.items():
+            for _, fem in con.fems.items():
+                fem_config = get_fem_config_instance(fem)
+                shared_ports_by_type = {}
+                analog_outputs = [port_id for port_id, port in fem_config.analog_outputs.items() if port.shareable]
+                analog_inputs = [port_id for port_id, port in fem_config.analog_inputs.items() if port.shareable]
+                digital_outputs = [port_id for port_id, port in fem_config.digital_outputs.items() if port.shareable]
+                digital_inputs = [port_id for port_id, port in fem_config.digital_inputs.items() if port.shareable]
+                if len(analog_outputs):
+                    shared_ports_by_type["analog_outputs"] = analog_outputs
+                if len(analog_inputs):
+                    shared_ports_by_type["analog_inputs"] = analog_inputs
+                if len(digital_outputs):
+                    shared_ports_by_type["digital_outputs"] = digital_outputs
+                if len(digital_inputs):
+                    shared_ports_by_type["digital_inputs"] = digital_inputs
+                if len(shared_ports_by_type):
+                    shared_ports_by_controller[con_name] = shared_ports_by_type
+
         if len(shared_ports_by_controller) > 0:
             error_message = "Server does not support shareable ports." + "\n".join(
                 [
@@ -150,23 +254,25 @@ def validate_config_capabilities(pb_config, server_capabilities: ServerCapabilit
 
 
 def load_config(config: DictQuaConfig) -> QuaConfig:
-    return QuaConfigSchema().load(config)
+    return cast(QuaConfig, QuaConfigSchema().load(config))
 
 
-PortReferenceSchema = fields.Tuple(
-    (fields.String(), fields.Int()),
-    metadata={"description": "Controller port to use. Tuple of: ([str] controller name, [int] controller port)"},
-)
+def _create_tuple_field(tuple_fields: List[fields.Field], description: Optional[str] = None) -> fields.Tuple:
+    """This function allows us to ignore the [no-untyped-call] just once."""
+    metadata = {"description": description} if description is not None else None
+    return fields.Tuple(tuple_fields, metadata=metadata)  # type: ignore[no-untyped-call]
 
 
 class UnionField(fields.Field):
     """Field that deserializes multi-type input data to app-level objects."""
 
-    def __init__(self, val_types: List[fields.Field], **kwargs):
+    def __init__(self, val_types: List[fields.Field], **kwargs: Any):
         self.valid_types = val_types
         super().__init__(**kwargs)
 
-    def _deserialize(self, value: Any, attr: str = None, data: Mapping[str, Any] = None, **kwargs):
+    def _deserialize(
+        self, value: Any, attr: Optional[str] = None, data: Optional[Mapping[str, Any]] = None, **kwargs: Any
+    ) -> Any:
         """
         _deserialize defines a custom Marshmallow Schema Field that takes in
         mutli-type input data to app-level objects.
@@ -201,6 +307,20 @@ class UnionField(fields.Field):
         raise ValidationError(errors)
 
 
+PortReferenceSchema = UnionField(
+    [
+        _create_tuple_field(
+            [fields.String(), fields.Int()],
+            description="Controller port to use. " "Tuple of: ([str] controller name, [int] controller port)",
+        ),
+        _create_tuple_field(
+            [fields.String(), fields.Int(), fields.Int()],
+            description="Controller port to use. Tuple of: ([str] controller name, [int] fem index, [int] controller port)",
+        ),
+    ]
+)
+
+
 class AnalogOutputFilterDefSchema(Schema):
     feedforward = fields.List(
         fields.Float(),
@@ -213,6 +333,7 @@ class AnalogOutputFilterDefSchema(Schema):
 
 
 class AnalogOutputPortDefSchema(Schema):
+    grpc_class = QuaConfigAnalogOutputPortDec
     offset = fields.Number(
         metadata={
             "description": "DC offset to the output, range: (-0.5, 0.5). "
@@ -234,14 +355,14 @@ class AnalogOutputPortDefSchema(Schema):
         description = "The specifications and properties of an analog output port of the controller."
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigAnalogOutputPortDec(
+    def build(self, data: AnalogOutputPortConfigType, **kwargs: Any) -> QuaConfigAnalogOutputPortDec:
+        item = self.grpc_class(
             offset=data["offset"],
             shareable=data.get("shareable", False),
         )
 
         if "delay" in data:
-            delay = data.get("delay", 0)
+            delay = data["delay"]
             if delay < 0:
                 raise ConfigValidationException(f"analog output delay cannot be a negative value, given value: {delay}")
             item.delay = delay
@@ -257,6 +378,30 @@ class AnalogOutputPortDefSchema(Schema):
             for k, v in data["crosstalk"].items():
                 item.crosstalk[k] = v
 
+        return item
+
+
+class AnalogOutputPortDefSchemaOPX1000(AnalogOutputPortDefSchema):
+    grpc_class = QuaConfigOctoDacAnalogOutputPortDec  # type: ignore[assignment]
+
+    sampling_rate = fields.Number(metadata={"description": "Sampling rate of the port, can be 1e9 (default) or 2e9 Hz"})
+    upsampling_mode = fields.String(
+        metadata={"description": "Mode of sampling rate, can be microwave (default) or pulse"}
+    )
+    output_mode = fields.String(metadata={"description": "Mode of the port, can be direct (default) or amplified"})
+
+    @post_load(pass_many=False)
+    def build(self, data: AnalogOutputPortConfigTypeOctoDac, **kwargs: Any) -> QuaConfigOctoDacAnalogOutputPortDec:
+        item: QuaConfigOctoDacAnalogOutputPortDec = super().build(data, **kwargs)
+        item.sampling_rate = create_sampling_rate_enum(data)
+        if item.sampling_rate == QuaConfigOctoDacAnalogOutputPortDecSamplingRate.GSPS1:
+            item.upsampling_mode = QuaConfigOctoDacAnalogOutputPortDecSamplingRateMode[
+                data.get("upsampling_mode", "mw")
+            ]
+        else:
+            if "upsampling_mode" in data:
+                raise ConfigValidationException("Sampling rate mode is only relevant for sampling rate of 1GHz.")
+        item.output_mode = QuaConfigOctoDacAnalogOutputPortDecOutputMode[data.get("output_mode", "direct")]
         return item
 
 
@@ -280,8 +425,8 @@ class AnalogInputPortDefSchema(Schema):
         description = "The specifications and properties of an analog input port of the controller."
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigAnalogInputPortDec(
+    def build(self, data: AnalogInputPortConfigType, **kwargs: Any) -> QuaConfigAnalogInputPortDec:
+        item = QuaConfigAnalogInputPortDec(
             offset=data.get("offset", 0.0),
             gain_db=data.get("gain_db"),
             shareable=data.get("shareable", False),
@@ -305,8 +450,8 @@ class DigitalOutputPortDefSchema(Schema):
         description = "The specifications and properties of a digital output port of the controller."
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigDigitalOutputPortDec(
+    def build(self, data: DigitalOutputPortConfigType, **kwargs: Any) -> QuaConfigDigitalOutputPortDec:
+        item = QuaConfigDigitalOutputPortDec(
             shareable=data.get("shareable", False), inverted=data.get("inverted", False)
         )
         return item
@@ -329,13 +474,13 @@ class DigitalInputPortDefSchema(Schema):
         description = "The specifications and properties of a digital input " "port of the controller."
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigDigitalInputPortDec()
+    def build(self, data: DigitalInputPortConfigType, **kwargs: Any) -> QuaConfigDigitalInputPortDec:
+        item = QuaConfigDigitalInputPortDec()
         item.deadtime = data["deadtime"]
         if data["polarity"].upper() == "RISING":
-            item.polarity = qua_config.QuaConfigDigitalInputPortDecPolarity.RISING
+            item.polarity = QuaConfigDigitalInputPortDecPolarity.RISING
         elif data["polarity"].upper() == "FALLING":
-            item.polarity = qua_config.QuaConfigDigitalInputPortDecPolarity.FALLING
+            item.polarity = QuaConfigDigitalInputPortDecPolarity.FALLING
 
         item.threshold = data["threshold"]
         if "shareable" in data:
@@ -349,11 +494,11 @@ class OctaveRFOutputSchema(Schema):
     output_mode = fields.String(metadata={"description": "The output mode of the RF output"})
     gain = fields.Number(metadata={"description": "The gain of the RF output in dB"})
     input_attenuators = fields.String(metadata={"description": "The attenuators of the I and Q inputs"})
-    I_connection = fields.Tuple([fields.String(), fields.Int()])
-    Q_connection = fields.Tuple([fields.String(), fields.Int()])
+    I_connection = PortReferenceSchema
+    Q_connection = PortReferenceSchema
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs) -> QuaConfigOctaveRfOutputConfig:
+    def build(self, data: OctaveRFOutputConfigType, **kwargs: Any) -> QuaConfigOctaveRfOutputConfig:
         return rf_module_to_pb(data)
 
 
@@ -365,17 +510,22 @@ class OctaveRFInputSchema(Schema):
     IF_mode_Q = fields.String()
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs) -> QuaConfigOctaveRfInputConfig:
+    def build(self, data: OctaveRFInputConfigType, **kwargs: Any) -> QuaConfigOctaveRfInputConfig:
         return rf_input_to_pb(data)
 
 
 class SingleIFOutputSchema(Schema):
-    port = fields.Tuple([fields.String(), fields.Int()])
+    port = PortReferenceSchema
     name = fields.String()
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs) -> QuaConfigOctaveSingleIfOutputConfig:
+    def build(self, data: OctaveSingleIfOutputConfigType, **kwargs: Any) -> QuaConfigOctaveSingleIfOutputConfig:
         return single_if_output_to_pb(data)
+
+
+class _SemiBuiltIFOutputsConfig(TypedDict, total=False):
+    IF_out1: QuaConfigOctaveSingleIfOutputConfig
+    IF_out2: QuaConfigOctaveSingleIfOutputConfig
 
 
 class IFOutputsSchema(Schema):
@@ -383,7 +533,7 @@ class IFOutputsSchema(Schema):
     IF_out2 = fields.Nested(SingleIFOutputSchema)
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs) -> QuaConfigOctaveIfOutputsConfig:
+    def build(self, data: _SemiBuiltIFOutputsConfig, **kwargs: Any) -> QuaConfigOctaveIfOutputsConfig:
         to_return = QuaConfigOctaveIfOutputsConfig()
         if "IF_out1" in data:
             to_return.if_out1 = data["IF_out1"]
@@ -392,9 +542,17 @@ class IFOutputsSchema(Schema):
         return to_return
 
 
+class _SemiBuiltOctaveConfig(TypedDict, total=False):
+    loopbacks: List[LoopbackType]
+    RF_outputs: Dict[int, QuaConfigOctaveRfOutputConfig]
+    RF_inputs: Dict[int, QuaConfigOctaveRfInputConfig]
+    IF_outputs: QuaConfigOctaveIfOutputsConfig
+    connectivity: str
+
+
 class OctaveSchema(Schema):
     loopbacks = fields.List(
-        fields.Tuple([fields.Tuple([fields.String, fields.String]), fields.String]),
+        _create_tuple_field([_create_tuple_field([fields.String(), fields.String()]), fields.String()]),
         metadata={
             "description": "List of loopbacks that connected to this octave, Each loopback is "
             "in the form of ((octave_name, octave_port), target_port)"
@@ -416,7 +574,7 @@ class OctaveSchema(Schema):
     )
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs) -> QuaConfigOctaveConfig:
+    def build(self, data: _SemiBuiltOctaveConfig, **kwargs: Any) -> QuaConfigOctaveConfig:
         to_return = QuaConfigOctaveConfig(
             loopbacks=get_octave_loopbacks(data.get("loopbacks", [])),
             rf_outputs=data.get("RF_outputs", {}),
@@ -440,8 +598,8 @@ class OctaveSchema(Schema):
                     upconverter.q_connection
                 ):
                     raise OctaveConnectionAmbiguity
-                upconverter.i_connection = dac_port_ref_to_pb(controller_name, 2 * upconverter_idx - 1)
-                upconverter.q_connection = dac_port_ref_to_pb(controller_name, 2 * upconverter_idx)
+                upconverter.i_connection = dac_port_ref_to_pb(controller_name, OPX_FEM_IDX, 2 * upconverter_idx - 1)
+                upconverter.q_connection = dac_port_ref_to_pb(controller_name, OPX_FEM_IDX, 2 * upconverter_idx)
 
             if betterproto.serialized_on_wire(to_return.if_outputs):
                 raise OctaveConnectionAmbiguity
@@ -454,9 +612,108 @@ class OctaveSchema(Schema):
         return to_return
 
 
-class ControllerSchema(Schema):
-    type = fields.Constant("opx1")
+class _SemiBuiltControllerConfig(TypedDict, total=False):
+    type: str
+    analog_outputs: Dict[int, QuaConfigAnalogOutputPortDec]
+    analog_inputs: Dict[int, QuaConfigAnalogInputPortDec]
+    digital_outputs: Dict[int, QuaConfigDigitalOutputPortDec]
+    digital_inputs: Dict[int, QuaConfigDigitalInputPortDec]
 
+
+class _SemiBuiltOctoDacConfig(TypedDict, total=False):
+    analog_outputs: Dict[int, QuaConfigOctoDacAnalogOutputPortDec]
+    analog_inputs: Dict[int, QuaConfigAnalogInputPortDec]
+    digital_outputs: Dict[int, QuaConfigDigitalOutputPortDec]
+    digital_inputs: Dict[int, QuaConfigDigitalInputPortDec]
+
+
+ControllerType = TypeVar("ControllerType", QuaConfigControllerDec, QuaConfigOctoDacFemDec)
+_SemiBuiltControllerType = TypeVar("_SemiBuiltControllerType", _SemiBuiltControllerConfig, _SemiBuiltOctoDacConfig)
+
+
+@overload
+def _append_data_to_controller(
+    data: _SemiBuiltControllerConfig, controller: QuaConfigControllerDec
+) -> QuaConfigControllerDec:
+    pass
+
+
+@overload
+def _append_data_to_controller(
+    data: _SemiBuiltOctoDacConfig, controller: QuaConfigOctoDacFemDec
+) -> QuaConfigOctoDacFemDec:
+    pass
+
+
+def _append_data_to_controller(data: _SemiBuiltControllerType, controller: ControllerType) -> ControllerType:
+    if "analog_outputs" in data:
+        for analog_output_name, analog_output in data["analog_outputs"].items():
+            if (
+                isinstance(controller, QuaConfigControllerDec)
+                and isinstance(analog_output, QuaConfigAnalogOutputPortDec)
+                or isinstance(controller, QuaConfigOctoDacFemDec)
+                and isinstance(analog_output, QuaConfigOctoDacAnalogOutputPortDec)
+            ):
+                controller.analog_outputs[analog_output_name] = analog_output
+            else:
+                raise ValidationError("Inconsistent types of analog outputs")
+
+    if "analog_inputs" in data:
+        for analog_input_name, analog_input in data["analog_inputs"].items():
+            controller.analog_inputs[analog_input_name] = analog_input
+
+    if "digital_outputs" in data:
+        controller.digital_outputs = data["digital_outputs"]
+
+    if "digital_inputs" in data:
+        controller.digital_inputs = data["digital_inputs"]
+
+    return controller
+
+
+class OctoDacControllerSchema(Schema):
+    analog_outputs = fields.Dict(
+        fields.Int(),
+        fields.Nested(AnalogOutputPortDefSchemaOPX1000),
+        description="The analog output ports and their properties.",
+    )
+    analog_inputs = fields.Dict(
+        fields.Int(),
+        fields.Nested(AnalogInputPortDefSchema),
+        description="The analog input ports and their properties.",
+    )
+    digital_outputs = fields.Dict(
+        fields.Int(),
+        fields.Nested(DigitalOutputPortDefSchema),
+        description="The digital output ports and their properties.",
+    )
+    digital_inputs = fields.Dict(
+        fields.Int(),
+        fields.Nested(DigitalInputPortDefSchema),
+        description="The digital inputs ports and their properties.",
+    )
+
+    class Meta:
+        title = "controller"
+        description = "The specification of a single controller and its properties."
+
+    @post_load(pass_many=False)
+    def build(self, data: _SemiBuiltOctoDacConfig, **kwargs: Any) -> QuaConfigOctoDacFemDec:
+        controller = QuaConfigOctoDacFemDec()
+        return _append_data_to_controller(data, controller)
+
+
+class SemiBuiltControllerConfig(TypedDict, total=False):
+    type: str
+    fems: Dict[int, Union[QuaConfigOctoDacFemDec, QuaConfigControllerDec]]
+    analog_outputs: Dict[int, QuaConfigAnalogOutputPortDec]
+    analog_inputs: Dict[int, QuaConfigAnalogInputPortDec]
+    digital_outputs: Dict[int, QuaConfigDigitalOutputPortDec]
+    digital_inputs: Dict[int, QuaConfigDigitalInputPortDec]
+
+
+class ControllerSchema(Schema):
+    type = fields.String(description="controller type")
     analog_outputs = fields.Dict(
         fields.Int(),
         fields.Nested(AnalogOutputPortDefSchema),
@@ -477,31 +734,34 @@ class ControllerSchema(Schema):
         fields.Nested(DigitalInputPortDefSchema),
         metadata={"description": "The digital inputs ports and their properties."},
     )
+    fems = fields.Dict(
+        fields.Int(),
+        fields.Nested(OctoDacControllerSchema),
+        metadata={"description": """"The FEMs. """},
+    )
 
     class Meta:
         title = "controller"
         description = "The specification of a single controller and its properties."
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigControllerDec()
-        item.type = data["type"]
+    def build(self, data: SemiBuiltControllerConfig, **kwargs: Any) -> QuaConfigDeviceDec:
+        item = QuaConfigDeviceDec()
 
-        if "analog_outputs" in data:
-            for k, v in data["analog_outputs"].items():
-                item.analog_outputs[k] = v
+        if "fems" in data:
+            # Here we assume that configuration of the OPX is as before
+            if set(data) & {"analog", "analog_outputs", "digital_outputs", "digital_inputs"}:
+                raise ValidationError(
+                    "'analog', 'analog_outputs', 'digital_outputs' and 'digital_inputs' are not allowed when 'fems' is present"
+                )
+            else:
+                for k, v in data["fems"].items():
+                    v = cast(QuaConfigOctoDacFemDec, v)
+                    item.fems[k] = QuaConfigFemTypes(octo_dac=v)
 
-        if "analog_inputs" in data:
-            for k, v in data["analog_inputs"].items():
-                item.analog_inputs[k] = v
-
-        if "digital_outputs" in data:
-            for k, v in data["digital_outputs"].items():
-                item.digital_outputs[k] = v
-
-        if "digital_inputs" in data:
-            for k, v in data["digital_inputs"].items():
-                item.digital_inputs[k] = v
+        else:
+            controller = QuaConfigControllerDec(type=data.get("type", "opx1"))
+            item.fems[OPX_FEM_IDX] = QuaConfigFemTypes(opx=_append_data_to_controller(data, controller))
 
         return item
 
@@ -526,20 +786,22 @@ class DigitalInputSchema(Schema):
         description = "The specification of the digital input of an element"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigDigitalInputPortReference()
-        item.delay = data["delay"]
-        item.buffer = data["buffer"]
+    def build(self, data: DigitalInputConfigType, **kwargs: Any) -> QuaConfigDigitalInputPortReference:
+        item = QuaConfigDigitalInputPortReference(delay=data["delay"], buffer=data["buffer"])
         if "port" in data:
-            item.port.controller = data["port"][0]
-            item.port.number = data["port"][1]
+            port_ref = _get_port_reference_with_fem(data["port"])
+            item.port = QuaConfigPortReference(
+                controller=port_ref[0],
+                fem=port_ref[1],
+                number=port_ref[2],
+            )
         return item
 
 
 class IntegrationWeightSchema(Schema):
     cosine = UnionField(
         [
-            fields.List(fields.Tuple([fields.Float(), fields.Int()])),
+            fields.List(_create_tuple_field([fields.Float(), fields.Int()])),
             fields.List(fields.Float()),
         ],
         metadata={
@@ -551,7 +813,7 @@ class IntegrationWeightSchema(Schema):
     )
     sine = UnionField(
         [
-            fields.List(fields.Tuple([fields.Float(), fields.Int()])),
+            fields.List(_create_tuple_field([fields.Float(), fields.Int()])),
             fields.List(fields.Float()),
         ],
         metadata={
@@ -566,30 +828,13 @@ class IntegrationWeightSchema(Schema):
         title = "Integration weights"
         description = "The specification of measurements' integration weights."
 
-    @staticmethod
-    def build_iw_sample(data):
-        if len(data) > 0 and not isinstance(data[0], tuple):
-            data = np.round(2**-15 * np.round(np.array(data) / 2**-15), 20)
-            new_data = []
-            for s in data:
-                if len(new_data) == 0 or new_data[-1][0] != s:
-                    new_data.append((s, 4))
-                else:
-                    new_data[-1] = (new_data[-1][0], new_data[-1][1] + 4)
-            data = new_data
-        res = []
-        for s in data:
-            sample = qua_config.QuaConfigIntegrationWeightSample(value=s[0], length=s[1])
-            res.append(sample)
-        return res
-
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigIntegrationWeightDec()
+    def build(self, data: IntegrationWeightConfigType, **kwargs: Any) -> QuaConfigIntegrationWeightDec:
+        item = QuaConfigIntegrationWeightDec()
         if "cosine" in data:
-            item.cosine.extend(self.build_iw_sample(data["cosine"]))
+            item.cosine.extend(build_iw_sample(data["cosine"]))
         if "sine" in data:
-            item.sine.extend(self.build_iw_sample(data["sine"]))
+            item.sine.extend(build_iw_sample(data["sine"]))
         return item
 
 
@@ -606,8 +851,8 @@ class ConstantWaveFormSchema(WaveFormSchema):
         description = "A waveform with a constant amplitude"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigWaveformDec(constant=qua_config.QuaConfigConstantWaveformDec(sample=data["sample"]))
+    def build(self, data: ConstantWaveFormConfigType, **kwargs: Any) -> QuaConfigWaveformDec:
+        item = QuaConfigWaveformDec(constant=QuaConfigConstantWaveformDec(sample=data["sample"]))
         return item
 
 
@@ -637,10 +882,10 @@ class ArbitraryWaveFormSchema(WaveFormSchema):
         description = "The modulating envelope of an arbitrary waveform"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
+    def build(self, data: ArbitraryWaveFormConfigType, **kwargs: Any) -> QuaConfigWaveformDec:
         is_overridable = data.get("is_overridable", False)
-        item = qua_config.QuaConfigWaveformDec(
-            arbitrary=qua_config.QuaConfigArbitraryWaveformDec(samples=data["samples"], is_overridable=is_overridable)
+        item = QuaConfigWaveformDec(
+            arbitrary=QuaConfigArbitraryWaveformDec(samples=data["samples"], is_overridable=is_overridable)
         )
         max_allowed_error_key = "max_allowed_error"
         sampling_rate_key = "sampling_rate"
@@ -648,15 +893,17 @@ class ArbitraryWaveFormSchema(WaveFormSchema):
         has_sampling_rate = sampling_rate_key in data
         validate_arbitrary_waveform(is_overridable, has_max_allowed_error, has_sampling_rate)
         if has_max_allowed_error:
-            item.arbitrary.max_allowed_error = data[max_allowed_error_key]
+            item.arbitrary.max_allowed_error = data[max_allowed_error_key]  # type: ignore[literal-required]
         elif has_sampling_rate:
-            item.arbitrary.sampling_rate = data[sampling_rate_key]
+            item.arbitrary.sampling_rate = data[sampling_rate_key]  # type: ignore[literal-required]
         elif not is_overridable:
             item.arbitrary.max_allowed_error = 1e-4
         return item
 
 
-def _waveform_schema_deserialization_disambiguation(object_dict, data):
+def _waveform_schema_deserialization_disambiguation(
+    object_dict: Union[ConstantWaveFormConfigType, ArbitraryWaveFormConfigType], data: Any
+) -> WaveFormSchema:
     type_to_schema = {
         "constant": ConstantWaveFormSchema,
         "arbitrary": ArbitraryWaveFormSchema,
@@ -664,9 +911,7 @@ def _waveform_schema_deserialization_disambiguation(object_dict, data):
     try:
         return type_to_schema[object_dict["type"]]()
     except KeyError:
-        pass
-
-    raise TypeError("Could not detect type. Did not have a base or a length. Are you sure this is a shape?")
+        raise TypeError("Could not detect type. Did not have a base or a length. Are you sure this is a shape?")
 
 
 _waveform_poly_field = PolyField(
@@ -677,7 +922,7 @@ _waveform_poly_field = PolyField(
 
 class DigitalWaveFormSchema(Schema):
     samples = fields.List(
-        fields.Tuple([fields.Int(), fields.Int()]),
+        _create_tuple_field([fields.Int(), fields.Int()]),
         metadata={
             "description": "The digital waveform. Given as a list of tuples, each tuple in the format of: "
             "([int] state, [int] duration). state is either 0 or 1 indicating whether the "
@@ -691,10 +936,10 @@ class DigitalWaveFormSchema(Schema):
         description = "The samples of a digital waveform"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigDigitalWaveformDec()
+    def build(self, data: DigitalWaveformConfigType, **kwargs: Any) -> QuaConfigDigitalWaveformDec:
+        item = QuaConfigDigitalWaveformDec()
         for sample in data["samples"]:
-            item.samples.append(qua_config.QuaConfigDigitalWaveformSample(value=bool(sample[0]), length=int(sample[1])))
+            item.samples.append(QuaConfigDigitalWaveformSample(value=bool(sample[0]), length=int(sample[1])))
         return item
 
 
@@ -703,12 +948,9 @@ class MixerSchema(Schema):
         metadata={"description": "The intermediate frequency associated with the correction matrix"}
     )
     lo_frequency = fields.Float(metadata={"description": "The LO frequency associated with the correction matrix"})
-    correction = fields.Tuple(
-        (fields.Number(), fields.Number(), fields.Number(), fields.Number()),
-        metadata={
-            "description": "A 2x2 matrix entered as a 4 elements list specifying the "
-            "correction matrix. Each element is a double in the range of (-2,2)"
-        },
+    correction = _create_tuple_field(
+        [fields.Number(), fields.Number(), fields.Number(), fields.Number()],
+        "A 2x2 matrix entered as a 4 elements list specifying the correction matrix. Each element is a double in the range of (-2,2)",
     )
 
     class Meta:
@@ -722,11 +964,11 @@ class MixerSchema(Schema):
     @inject
     def build(
         self,
-        data,
+        data: MixerConfigType,
         capabilities: ServerCapabilities = Provide[CapabilitiesContainer.capabilities],
-        **kwargs,
-    ):
-        item = qua_config.QuaConfigCorrectionEntry(correction=qua_config.QuaConfigMatrix(*data["correction"]))
+        **kwargs: Any,
+    ) -> QuaConfigCorrectionEntry:
+        item = QuaConfigCorrectionEntry(correction=QuaConfigMatrix(*data["correction"]))
 
         if "lo_frequency" in data:
             item.lo_frequency = int(data["lo_frequency"])  # backwards compatibility
@@ -740,7 +982,7 @@ class MixerSchema(Schema):
 
             item.frequency_negative = data["intermediate_frequency"] < 0
 
-        item.correction = qua_config.QuaConfigMatrix(
+        item.correction = QuaConfigMatrix(
             data["correction"][0],
             data["correction"][1],
             data["correction"][2],
@@ -784,13 +1026,13 @@ class PulseSchema(Schema):
         description = "The specification and properties of a single pulse and to the measurement associated with it."
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigPulseDec()
+    def build(self, data: PulseConfigType, **kwargs: Any) -> QuaConfigPulseDec:
+        item = QuaConfigPulseDec()
         item.length = data["length"]
         if data["operation"] == "measurement":
-            item.operation = qua_config.QuaConfigPulseDecOperation.MEASUREMENT
+            item.operation = QuaConfigPulseDecOperation.MEASUREMENT
         elif data["operation"] == "control":
-            item.operation = qua_config.QuaConfigPulseDecOperation.CONTROL
+            item.operation = QuaConfigPulseDecOperation.CONTROL
         if "integration_weights" in data:
             for k, v in data["integration_weights"].items():
                 item.integration_weights[k] = v
@@ -810,11 +1052,9 @@ class SingleInputSchema(Schema):
         description = "The specification of the input of an element which has a single input port"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        controller, number = data["port"]
-        item = qua_config.QuaConfigSingleInput(
-            port=qua_config.QuaConfigDacPortReference(controller=controller, number=number)
-        )
+    def build(self, data: SingleInputConfigType, **kwargs: Any) -> QuaConfigSingleInput:
+        controller, fem, number = _get_port_reference_with_fem(data["port"])
+        item = QuaConfigSingleInput(port=QuaConfigDacPortReference(controller=controller, fem=fem, number=number))
         return item
 
 
@@ -826,8 +1066,8 @@ class HoldOffsetSchema(Schema):
         description = "When defined, makes the element sticky"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigHoldOffset()
+    def build(self, data: HoldOffsetConfigType, **kwargs: Any) -> QuaConfigHoldOffset:
+        item = QuaConfigHoldOffset()
         item.duration = data["duration"]
         return item
 
@@ -842,12 +1082,12 @@ class StickySchema(Schema):
         description = "When defined, makes the element sticky"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigSticky()
+    def build(self, data: StickyConfigType, **kwargs: Any) -> QuaConfigSticky:
+        item = QuaConfigSticky()
         item.duration = data.get("duration", 4)
-        item.analog = data.get("analog")
+        item.analog = data["analog"]
         if "digital" in data:
-            item.digital = data.get("digital")
+            item.digital = data["digital"]
         return item
 
 
@@ -872,15 +1112,17 @@ class MixInputSchema(Schema):
     @inject
     def build(
         self,
-        data,
+        data: MixInputConfigType,
         capabilities: ServerCapabilities = Provide[CapabilitiesContainer.capabilities],
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> QuaConfigMixInputs:
         lo_frequency = data.get("lo_frequency", 0)
+        cont_i, fem_i, num_i = _get_port_reference_with_fem(data["I"])
+        cont_q, fem_q, num_q = _get_port_reference_with_fem(data["Q"])
 
-        item = qua_config.QuaConfigMixInputs(
-            i=qua_config.QuaConfigDacPortReference(controller=data["I"][0], number=data["I"][1]),
-            q=qua_config.QuaConfigDacPortReference(controller=data["Q"][0], number=data["Q"][1]),
+        item = QuaConfigMixInputs(
+            i=QuaConfigDacPortReference(controller=cont_i, fem=fem_i, number=num_i),
+            q=QuaConfigDacPortReference(controller=cont_q, fem=fem_q, number=num_q),
             mixer=data.get("mixer", ""),
             lo_frequency=int(lo_frequency),
         )
@@ -901,10 +1143,11 @@ class SingleInputCollectionSchema(Schema):
         description = "Defines a set of single inputs which can be switched during play statements"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigSingleInputCollection()
-        for name, (controller, number) in data["inputs"].items():
-            item.inputs[name] = qua_config.QuaConfigDacPortReference(controller=controller, number=number)
+    def build(self, data: InputCollectionConfigType, **kwargs: Any) -> QuaConfigSingleInputCollection:
+        item = QuaConfigSingleInputCollection()
+        for name, reference in data["inputs"].items():
+            controller, fem, number = _get_port_reference_with_fem(reference)
+            item.inputs[name] = QuaConfigDacPortReference(controller=controller, fem=fem, number=number)
         return item
 
 
@@ -920,10 +1163,11 @@ class MultipleInputsSchema(Schema):
         description = "Defines a set of single inputs which are all played at once"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        item = qua_config.QuaConfigMultipleInputs()
-        for name, (controller, number) in data["inputs"].items():
-            item.inputs[name] = qua_config.QuaConfigDacPortReference(controller=controller, number=number)
+    def build(self, data: InputCollectionConfigType, **kwargs: Any) -> QuaConfigMultipleInputs:
+        item = QuaConfigMultipleInputs()
+        for name, reference in data["inputs"].items():
+            controller, fem, number = _get_port_reference_with_fem(reference)
+            item.inputs[name] = QuaConfigDacPortReference(controller=controller, fem=fem, number=number)
         return item
 
 
@@ -946,11 +1190,11 @@ class OscillatorSchema(Schema):
     @inject
     def build(
         self,
-        data,
+        data: OscillatorConfigType,
         capabilities: ServerCapabilities = Provide[CapabilitiesContainer.capabilities],
-        **kwargs,
-    ):
-        osc = qua_config.QuaConfigOscillator()
+        **kwargs: Any,
+    ) -> QuaConfigOscillator:
+        osc = QuaConfigOscillator()
         if "intermediate_frequency" in data and data["intermediate_frequency"] is not None:
             osc.intermediate_frequency = int(data["intermediate_frequency"])
             if capabilities.supports_double_frequency:
@@ -963,6 +1207,28 @@ class OscillatorSchema(Schema):
                 osc.mixer.lo_frequency_double = float(data.get("lo_frequency", 0.0))
 
         return osc
+
+
+class _SemiBuiltElement(TypedDict, total=False):
+    intermediate_frequency: float
+    oscillator: str
+    measurement_qe: str
+    operations: Dict[str, str]
+    singleInput: QuaConfigSingleInput
+    mixInputs: QuaConfigMixInputs
+    singleInputCollection: QuaConfigSingleInputCollection
+    multipleInputs: QuaConfigMultipleInputs
+    time_of_flight: int
+    smearing: int
+    outputs: Dict[str, PortReferenceType]
+    digitalInputs: Dict[str, QuaConfigDigitalInputPortReference]
+    digitalOutputs: Dict[str, PortReferenceType]
+    outputPulseParameters: OutputPulseParameterConfigType
+    hold_offset: QuaConfigHoldOffset
+    sticky: QuaConfigSticky
+    thread: str
+    RF_inputs: Dict[str, Tuple[str, int]]
+    RF_outputs: Dict[str, Tuple[str, int]]
 
 
 class ElementSchema(Schema):
@@ -1019,8 +1285,8 @@ class ElementSchema(Schema):
     sticky = fields.Nested(StickySchema)
 
     thread = fields.String(metadata={"description": "QE thread"})
-    RF_inputs = fields.Dict(keys=fields.String, values=PortReferenceSchema)
-    RF_outputs = fields.Dict(keys=fields.String, values=PortReferenceSchema)
+    RF_inputs = fields.Dict(keys=fields.String(), values=_create_tuple_field([fields.String(), fields.Int()]))
+    RF_outputs = fields.Dict(keys=fields.String(), values=_create_tuple_field([fields.String(), fields.Int()]))
 
     class Meta:
         title = "Element"
@@ -1030,11 +1296,11 @@ class ElementSchema(Schema):
     @inject
     def build(
         self,
-        data,
+        data: _SemiBuiltElement,
         capabilities: ServerCapabilities = Provide[CapabilitiesContainer.capabilities],
-        **kwargs,
-    ):
-        el = qua_config.QuaConfigElementDec()
+        **kwargs: Any,
+    ) -> QuaConfigElementDec:
+        el = QuaConfigElementDec()
         if "intermediate_frequency" in data and data["intermediate_frequency"] is not None:
             el.intermediate_frequency = abs(int(data["intermediate_frequency"]))
             el.intermediate_frequency_oscillator = int(data["intermediate_frequency"])
@@ -1066,44 +1332,38 @@ class ElementSchema(Schema):
         if "smearing" in data:
             el.smearing = data["smearing"]
         if "operations" in data:
-            for k, v in data["operations"].items():
-                el.operations[k] = v
-        if "inputs" in data:
-            el.inputs = _build_port(data["inputs"])
+            for op_name, operation in data["operations"].items():
+                el.operations[op_name] = operation
         if "outputs" in data:
             el.outputs = _build_port(data["outputs"])
         if "digitalInputs" in data:
-            for k, v in data["digitalInputs"].items():
-                el.digital_inputs[k] = v
+            for digital_input_name, digital_input in data["digitalInputs"].items():
+                el.digital_inputs[digital_input_name] = digital_input
         if "digitalOutputs" in data:
-            for k, v in data["digitalOutputs"].items():
-                el.digital_outputs[k] = qua_config.QuaConfigDigitalOutputPortReference(
-                    port=qua_config.QuaConfigPortReference(controller=v[0], number=v[1])
+            for digital_output_name, digital_output in data["digitalOutputs"].items():
+                port_ref = _get_port_reference_with_fem(digital_output)
+                el.digital_outputs[digital_output_name] = QuaConfigDigitalOutputPortReference(
+                    port=QuaConfigPortReference(controller=port_ref[0], fem=port_ref[1], number=port_ref[2])
                 )
+
         if "outputPulseParameters" in data:
             pulse_parameters = data["outputPulseParameters"]
             el.output_pulse_parameters.signal_threshold = pulse_parameters["signalThreshold"]
 
             signal_polarity = pulse_parameters["signalPolarity"].upper()
             if signal_polarity == "ABOVE" or signal_polarity == "ASCENDING":
-                el.output_pulse_parameters.signal_polarity = qua_config.QuaConfigOutputPulseParametersPolarity.ASCENDING
+                el.output_pulse_parameters.signal_polarity = QuaConfigOutputPulseParametersPolarity.ASCENDING
             elif signal_polarity == "BELOW" or signal_polarity == "DESCENDING":
-                el.output_pulse_parameters.signal_polarity = (
-                    qua_config.QuaConfigOutputPulseParametersPolarity.DESCENDING
-                )
+                el.output_pulse_parameters.signal_polarity = QuaConfigOutputPulseParametersPolarity.DESCENDING
 
             if "derivativeThreshold" in pulse_parameters:
                 el.output_pulse_parameters.derivative_threshold = pulse_parameters["derivativeThreshold"]
 
                 polarity = pulse_parameters["derivativePolarity"].upper()
                 if polarity == "ABOVE" or polarity == "ASCENDING":
-                    el.output_pulse_parameters.derivative_polarity = (
-                        qua_config.QuaConfigOutputPulseParametersPolarity.ASCENDING
-                    )
+                    el.output_pulse_parameters.derivative_polarity = QuaConfigOutputPulseParametersPolarity.ASCENDING
                 elif polarity == "BELOW" or polarity == "DESCENDING":
-                    el.output_pulse_parameters.derivative_polarity = (
-                        qua_config.QuaConfigOutputPulseParametersPolarity.DESCENDING
-                    )
+                    el.output_pulse_parameters.derivative_polarity = QuaConfigOutputPulseParametersPolarity.DESCENDING
         if "sticky" in data:
             validate_sticky_duration(data["sticky"].duration)
             if capabilities.supports_sticky_elements:
@@ -1114,13 +1374,11 @@ class ElementSchema(Schema):
                     raise ConfigValidationException(
                         f"Server does not support digital sticky used in element " f"'{el}'"
                     )
-                el.hold_offset = qua_config.QuaConfigHoldOffset(duration=int(data["sticky"].duration / 4))
+                el.hold_offset = QuaConfigHoldOffset(duration=int(data["sticky"].duration / 4))
 
         elif "hold_offset" in data:
             if capabilities.supports_sticky_elements:
-                el.sticky = qua_config.QuaConfigSticky(
-                    analog=True, digital=False, duration=data["hold_offset"].duration
-                )
+                el.sticky = QuaConfigSticky(analog=True, digital=False, duration=data["hold_offset"].duration)
             else:
                 el.hold_offset = data["hold_offset"]
 
@@ -1137,28 +1395,42 @@ class ElementSchema(Schema):
         return el
 
     @validates_schema
-    def validate_timetagging_parameters(self, data, **kwargs):
+    def validate_timetagging_parameters(self, data: ElementConfigType, **kwargs: Any) -> None:
         validate_timetagging_parameters(data)
 
     @validates_schema
-    def validate_output_tof(self, data, **kwargs):
+    def validate_output_tof(self, data: ElementConfigType, **kwargs: Any) -> None:
         validate_output_tof(data)
 
     @validates_schema
-    def validate_output_smearing(self, data, **kwargs):
+    def validate_output_smearing(self, data: ElementConfigType, **kwargs: Any) -> None:
         validate_output_smearing(data)
 
     @validates_schema
-    def validate_oscillator(self, data, **kwargs):
+    def validate_oscillator(self, data: ElementConfigType, **kwargs: Any) -> None:
         validate_oscillator(data)
 
 
-def _build_port(data) -> Dict[str, qua_config.QuaConfigAdcPortReference]:
+def _build_port(data: Dict[str, PortReferenceType]) -> Dict[str, QuaConfigAdcPortReference]:
     outputs = {}
     if data is not None:
-        for k, (controller, number) in data.items():
-            outputs[k] = qua_config.QuaConfigAdcPortReference(controller=controller, number=number)
+        for k, port in data.items():
+            port_ref = _get_port_reference_with_fem(port)
+            outputs[k] = QuaConfigAdcPortReference(controller=port_ref[0], fem=port_ref[1], number=port_ref[2])
     return outputs
+
+
+class _SemiBuiltQuaConfig(TypedDict, total=False):
+    version: int
+    oscillators: Dict[str, QuaConfigOscillator]
+    elements: Dict[str, QuaConfigElementDec]
+    controllers: Dict[str, QuaConfigDeviceDec]
+    octaves: Dict[str, QuaConfigOctaveConfig]
+    integration_weights: Dict[str, QuaConfigIntegrationWeightDec]
+    waveforms: Dict[str, QuaConfigWaveformDec]
+    digital_waveforms: Dict[str, QuaConfigDigitalWaveformDec]
+    pulses: Dict[str, QuaConfigPulseDec]
+    mixers: Dict[str, List[QuaConfigCorrectionEntry]]
 
 
 class QuaConfigSchema(Schema):
@@ -1239,39 +1511,36 @@ class QuaConfigSchema(Schema):
         description = "QUA program config root object"
 
     @post_load(pass_many=False)
-    def build(self, data, **kwargs):
-        config_wrapper = qua_config.QuaConfig()
-        config = qua_config.QuaConfigQuaConfigV1()
+    def build(self, data: _SemiBuiltQuaConfig, **kwargs: Any) -> QuaConfig:
+        config_wrapper = QuaConfig()
+        config = QuaConfigQuaConfigV1()
         version = data["version"]
         if str(version) != "1":
             raise RuntimeError("Version must be set to 1 (was set to " + str(version) + ")")
         if "elements" in data:
-            for el_name, el in data["elements"].items():
-                config.elements[el_name] = el
+            config.elements = data["elements"]
         if "oscillators" in data:
-            for osc_name, osc in data["oscillators"].items():
-                config.oscillators[osc_name] = osc
+            config.oscillators = data["oscillators"]
         if "controllers" in data:
-            for k, v in data["controllers"].items():
-                config.controllers[k] = v
+            for name, control_device in data["controllers"].items():
+                config.control_devices[name] = control_device
+            if _all_controllers_are_opx(config.control_devices):
+                for name, control_device in config.control_devices.items():
+                    config.controllers[name] = control_device.fems[OPX_FEM_IDX].opx
         if "octaves" in data:
-            for k, v in data["octaves"].items():
-                config.octaves[k] = v
+            config.octaves = data["octaves"]
         if "integration_weights" in data:
-            for k, v in data["integration_weights"].items():
-                config.integration_weights[k] = v
+            config.integration_weights = data["integration_weights"]
         if "waveforms" in data:
-            for k, v in data["waveforms"].items():
-                config.waveforms[k] = v
+            config.waveforms = data["waveforms"]
         if "digital_waveforms" in data:
-            for k, v in data["digital_waveforms"].items():
-                config.digital_waveforms[k] = v
+            config.digital_waveforms = data["digital_waveforms"]
         if "mixers" in data:
-            for k, v in data["mixers"].items():
-                config.mixers[k] = qua_config.QuaConfigMixerDec(correction=v)
+            for mixer_name, correction_entry in data["mixers"].items():
+                config.mixers[mixer_name] = QuaConfigMixerDec(correction=correction_entry)
         if "pulses" in data:
-            for k, v in data["pulses"].items():
-                config.pulses[k] = v
+            for pulse_name, pulse in data["pulses"].items():
+                config.pulses[pulse_name] = pulse
 
         config_wrapper.v1_beta = config
         set_octave_upconverter_connection_to_elements(config_wrapper)

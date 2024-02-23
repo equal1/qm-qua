@@ -7,15 +7,16 @@ import qm.grpc.qm_api
 from qm.type_hinting import Value
 from qm.grpc.qua import QuaProgram
 from qm.grpc.compiler import QuaValues
-from qm.grpc.qua_config import QuaConfig
 from qm.utils.async_utils import run_async
 from qm.grpc.general_messages import Matrix
 from qm.api.models.jobs import InsertDirection
 from qm.utils.protobuf_utils import LOG_LEVEL_MAP
+from qm.api.models.capabilities import OPX_FEM_IDX
 from qm.api.models.server_details import ConnectionDetails
 from qm.api.base_api import BaseApi, connection_error_handle
 from qm.api.models.quantum_machine import QuantumMachineData
 from qm.api.models.devices import Polarity, MixerInfo, AnalogOutputPortFilter
+from qm.grpc.qua_config import QuaConfig, QuaConfigFemTypes, QuaConfigDeviceDec
 from qm.api.models.compiler import CompilerOptionArguments, _get_request_compiler_options
 from qm.grpc.qm_manager import (
     Controller,
@@ -156,6 +157,14 @@ class FrontendApi(BaseApi):
 
     def get_quantum_machine_config(self, machine_id: str) -> QuaConfig:
         machine_data = self.get_quantum_machine(machine_id)
+        config = machine_data.config
+        # TODO - this is a patch to make the tests work, once we move to the new GRPC messages,
+        #  we will need to check it for backwards compatibility.
+        if not config.v1_beta.control_devices:
+            for controller_name, controller in config.v1_beta.controllers.items():
+                config.v1_beta.control_devices[controller_name] = QuaConfigDeviceDec(
+                    fems={OPX_FEM_IDX: QuaConfigFemTypes(opx=controller)}
+                )
         return machine_data.config
 
     def close_all_quantum_machines(self) -> None:
@@ -357,10 +366,12 @@ class FrontendApi(BaseApi):
         self._perform_qm_request(request)
 
     def set_digital_input_threshold(
-        self, machine_id: str, controller_name: str, port_number: int, threshold: float
+        self, machine_id: str, controller_name: str, fem_number: int, port_number: int, threshold: float
     ) -> None:
         digital_input_threshold_request = HighQmApiRequestSetDigitalInputThreshold(
-            digital_port=DigitalInputPort(controller_name=controller_name, port_number=port_number),
+            digital_port=DigitalInputPort(
+                controller_name=controller_name, fem_number=fem_number, port_number=port_number
+            ),
             threshold=threshold,
         )
         request = HighQmApiRequest(
@@ -370,10 +381,12 @@ class FrontendApi(BaseApi):
         self._perform_qm_request(request)
 
     def set_digital_input_dead_time(
-        self, machine_id: str, controller_name: str, port_number: int, dead_time: int
+        self, machine_id: str, controller_name: str, fem_number: int, port_number: int, dead_time: int
     ) -> None:
         digital_input_dead_time_request = HighQmApiRequestSetDigitalInputDeadtime(
-            digital_port=DigitalInputPort(controller_name=controller_name, port_number=port_number),
+            digital_port=DigitalInputPort(
+                controller_name=controller_name, fem_number=fem_number, port_number=port_number
+            ),
             deadtime=dead_time,
         )
         request = HighQmApiRequest(
@@ -386,11 +399,14 @@ class FrontendApi(BaseApi):
         self,
         machine_id: str,
         controller_name: str,
+        fem_number: int,
         port_number: int,
         polarity: Polarity,
     ) -> None:
         digital_input_polarity_request = HighQmApiRequestSetDigitalInputPolarity(
-            digital_port=DigitalInputPort(controller_name=controller_name, port_number=port_number),
+            digital_port=DigitalInputPort(
+                controller_name=controller_name, fem_number=fem_number, port_number=port_number
+            ),
             polarity=polarity.value,
         )
         request = HighQmApiRequest(

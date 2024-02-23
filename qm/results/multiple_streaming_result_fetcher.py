@@ -48,7 +48,7 @@ class MultipleStreamingResultFetcher(BaseStreamingResultFetcher):
         self,
         item: Union[int, slice],
         *,
-        check_for_errors: bool = False,
+        check_for_errors: bool = True,
         flat_struct: bool = False,
     ) -> Optional[numpy.typing.NDArray[numpy.generic]]:
         """Fetch a result from the current result stream saved in server memory.
@@ -58,8 +58,9 @@ class MultipleStreamingResultFetcher(BaseStreamingResultFetcher):
 
         Args:
             item: The index of the result in the saved results stream.
-            flat_struct: results will have a flat structure - dimensions
-                will be part of the shape and not of the type
+            check_for_errors: If true, the function would also check whether run-time errors happened during the
+                program execution and would write to the logger an error message.
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
 
         Returns:
             a single result if item is integer or multiple results if item is Python slice object.
@@ -100,8 +101,8 @@ class MultipleStreamingResultFetcher(BaseStreamingResultFetcher):
                 dtype = [
                     ("value", values_result.dtype),
                     ("timestamp", timestamps_result.dtype),
-                ]  # timestamps_result.dtype.descr
-                combined = numpy.rec.fromarrays([values_result, timestamps_result], dtype=dtype)  # type: ignore[no-untyped-call]
+                ]
+                combined = numpy.rec.fromarrays([values_result, timestamps_result], dtype=dtype)
                 return cast(numpy.typing.NDArray[numpy.generic], combined.view(numpy.ndarray).astype(dtype))
 
     def save_to_store(
@@ -114,6 +115,7 @@ class MultipleStreamingResultFetcher(BaseStreamingResultFetcher):
         Args:
             writer: An optional writer to override the store defined in
                 [QuantumMachinesManager][qm.quantum_machines_manager.QuantumMachinesManager]
+            flat_struct: results will have a flat structure - dimensions will be part of the shape and not of the type
 
         Returns:
             The number of items saved

@@ -2,8 +2,7 @@ import ssl
 import json
 import logging
 import warnings
-from typing_extensions import TypedDict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 import marshmallow
 
@@ -26,6 +25,7 @@ from qm.persistence import BaseStore, SimpleFileStore
 from qm.api.models.server_details import ServerDetails
 from qm.type_hinting.config_types import DictQuaConfig
 from qm.program._qua_config_to_pb import load_config_pb
+from qm.utils.config_utils import get_simulation_sampling_rate
 from qm._octaves_container import load_config_from_calibration_db
 from qm.exceptions import QmmException, ConfigValidationException
 from qm.program._qua_config_schema import validate_config_capabilities
@@ -95,11 +95,27 @@ class QuantumMachinesManager:
             add_debug_data=add_debug_data,
             connection_headers=connection_headers,
         )
+        if self._server_details.octaves:
+            if octave is None:
+                octave = QmOctaveConfig()
+            if octave.get_devices():
+                warnings.warn(
+                    "QMM was opened with OctaveConfig. Please note that from QOP2.4.0 the octave devices "
+                    "are managed by the cluster setting in the QM-app. It is recommended to remove the "
+                    "OctaveConfig from the QMM instantiation.",
+                    category=DeprecationWarning,
+                )
+            else:
+                for name, info in self._server_details.octaves.items():
+                    octave.add_device(name, info)
+        elif octave is not None:
+            opx_headers = self._server_details.connection_details.headers
+            for _, device in octave.get_devices().items():
+                device.headers = {**opx_headers, **device.headers}
 
         self._caps = self._server_details.capabilities
         self._frontend = FrontendApi(self._server_details.connection_details)
         self._simulation_api = SimulationApi(self._server_details.connection_details)
-
         self._octave_config = octave
         self._octave_manager = OctaveManager(self._octave_config, self, self._caps)
 
@@ -273,7 +289,8 @@ class QuantumMachinesManager:
 
     def validate_qua_config(self, qua_config: DictQuaConfig) -> None:
         """
-        Validates a qua config based on the connected server's capabilities and returns True if the config is correct.
+        Validates a qua config based on the connected server's capabilities.
+        Raises an exception if the config is invalid.
 
         Args:
             qua_config: A python dict containing the qua config to validate
@@ -339,13 +356,17 @@ class QuantumMachinesManager:
             a ``QmJob`` object (see QM Job API).
         """
         standardized_options = standardize_compiler_params(compiler_options, strict, flags)
-        job_id, simulated_response_part = self._simulation_api.simulate(config, program, simulate, standardized_options)
+        pb_config = load_config(config)
+        job_id, simulated_response_part = self._simulation_api.simulate(
+            pb_config, program, simulate, standardized_options
+        )
         return SimulatedJob(
             job_id=job_id,
             frontend_api=self._frontend,
             capabilities=self._server_details.capabilities,
             store=self._store,
             simulated_response=simulated_response_part,
+            sampling_rate=get_simulation_sampling_rate(pb_config),
         )
 
     def list_open_quantum_machines(self) -> List[str]:

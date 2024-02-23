@@ -128,6 +128,9 @@ class JobExecutionStatus(betterproto.Message):
     )
     loading: "JobExecutionStatusLoading" = betterproto.message_field(6, group="status")
     error: "JobExecutionStatusError" = betterproto.message_field(7, group="status")
+    processing: "JobExecutionStatusProcessing" = betterproto.message_field(
+        8, group="status"
+    )
 
 
 @dataclass(eq=False, repr=False)
@@ -176,6 +179,13 @@ class JobExecutionStatusError(betterproto.Message):
         betterproto.message_field(1)
     )
     added_by: str = betterproto.string_field(2)
+
+
+@dataclass(eq=False, repr=False)
+class JobExecutionStatusProcessing(betterproto.Message):
+    time_added: datetime = betterproto.message_field(1)
+    added_by: str = betterproto.string_field(2)
+    time_started: datetime = betterproto.message_field(3)
 
 
 @dataclass(eq=False, repr=False)
@@ -516,8 +526,10 @@ class ExecutionRequestSimulateSimulationInterfaceLoopbackConnections(
     betterproto.Message
 ):
     from_controller: str = betterproto.string_field(1)
+    from_fem: int = betterproto.int32_field(5)
     from_port: int = betterproto.int32_field(2)
     to_controller: str = betterproto.string_field(3)
+    to_fem: int = betterproto.int32_field(6)
     to_port: int = betterproto.int32_field(4)
 
 
@@ -565,6 +577,7 @@ class ExecutionRequestSimulateSimulationInterfaceRawInterfaceConnections(
     betterproto.Message
 ):
     from_controller: str = betterproto.string_field(1)
+    from_fem: int = betterproto.int32_field(4)
     from_port: int = betterproto.int32_field(2)
     to_samples: List[float] = betterproto.double_field(3)
 
@@ -838,6 +851,24 @@ class FrontendStub(betterproto.ServiceStub):
             deadline=deadline,
             metadata=metadata,
         )
+
+    async def get_job_status_updates(
+        self,
+        get_job_execution_status_request: "GetJobExecutionStatusRequest",
+        *,
+        timeout: Optional[float] = None,
+        deadline: Optional["Deadline"] = None,
+        metadata: Optional["MetadataLike"] = None
+    ) -> AsyncIterator["GetJobExecutionStatusResponse"]:
+        async for response in self._unary_stream(
+            "/qm.grpc.frontend.Frontend/GetJobStatusUpdates",
+            get_job_execution_status_request,
+            GetJobExecutionStatusResponse,
+            timeout=timeout,
+            deadline=deadline,
+            metadata=metadata,
+        ):
+            yield response
 
     async def paused_status(
         self,
@@ -1261,6 +1292,11 @@ class FrontendBase(ServiceBase):
     ) -> "GetJobExecutionStatusResponse":
         raise grpclib.GRPCError(grpclib.const.Status.UNIMPLEMENTED)
 
+    async def get_job_status_updates(
+        self, get_job_execution_status_request: "GetJobExecutionStatusRequest"
+    ) -> AsyncIterator["GetJobExecutionStatusResponse"]:
+        raise grpclib.GRPCError(grpclib.const.Status.UNIMPLEMENTED)
+
     async def paused_status(
         self, paused_status_request: "PausedStatusRequest"
     ) -> "PausedStatusResponse":
@@ -1440,6 +1476,17 @@ class FrontendBase(ServiceBase):
         request = await stream.recv_message()
         response = await self.get_job_execution_status(request)
         await stream.send_message(response)
+
+    async def __rpc_get_job_status_updates(
+        self,
+        stream: "grpclib.server.Stream[GetJobExecutionStatusRequest, GetJobExecutionStatusResponse]",
+    ) -> None:
+        request = await stream.recv_message()
+        await self._call_rpc_handler_server_stream(
+            self.get_job_status_updates,
+            stream,
+            request,
+        )
 
     async def __rpc_paused_status(
         self, stream: "grpclib.server.Stream[PausedStatusRequest, PausedStatusResponse]"
@@ -1667,6 +1714,12 @@ class FrontendBase(ServiceBase):
             "/qm.grpc.frontend.Frontend/GetJobExecutionStatus": grpclib.const.Handler(
                 self.__rpc_get_job_execution_status,
                 grpclib.const.Cardinality.UNARY_UNARY,
+                GetJobExecutionStatusRequest,
+                GetJobExecutionStatusResponse,
+            ),
+            "/qm.grpc.frontend.Frontend/GetJobStatusUpdates": grpclib.const.Handler(
+                self.__rpc_get_job_status_updates,
+                grpclib.const.Cardinality.UNARY_STREAM,
                 GetJobExecutionStatusRequest,
                 GetJobExecutionStatusResponse,
             ),

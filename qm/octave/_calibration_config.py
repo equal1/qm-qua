@@ -19,13 +19,12 @@ def _prep_config(
         }
         for name in controller_names
     }
-    controllers[i_port[0]]["analog_outputs"] = {}
-    controllers[i_port[0]]["analog_outputs"][i_port[1]] = {"offset": 0}
-    controllers[q_port[0]]["analog_outputs"][q_port[1]] = {"offset": 0}
+    controllers[i_port[0]]["analog_outputs"] = {
+        i_port[1]: {"offset": 0},
+        q_port[1]: {"offset": 0},
+    }
     for port in adc_channels:
-        controllers[port[0]]["analog_inputs"] = {}
-    for port in adc_channels:
-        controllers[port[0]]["analog_inputs"][port[1]] = {"offset": 0.0}
+        controllers[port[0]]["analog_inputs"] = {port[1]: {"offset": 0.0}}
 
     config: DictQuaConfig = {
         "version": 1,

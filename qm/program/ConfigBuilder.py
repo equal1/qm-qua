@@ -1,48 +1,101 @@
-from typing import cast
+import warnings
+from typing import Dict, List, Tuple, Union, Literal, cast
 
-from qm.type_hinting.config_types import DictQuaConfig
-from qm.grpc.qua_config import QuaConfig, QuaConfigQuaConfigV1, QuaConfigPulseDecOperation
+import betterproto
+
+from qm.type_hinting import Number
+from qm.type_hinting.config_types import (
+    DictQuaConfig,
+    FemConfigType,
+    MixerConfigType,
+    PulseConfigType,
+    StickyConfigType,
+    ElementConfigType,
+    PortReferenceType,
+    MixInputConfigType,
+    ControllerConfigType,
+    HoldOffsetConfigType,
+    OscillatorConfigType,
+    SingleInputConfigType,
+    DigitalInputConfigType,
+    AnalogInputPortConfigType,
+    DigitalWaveformConfigType,
+    InputCollectionConfigType,
+    AnalogOutputPortConfigType,
+    ConstantWaveFormConfigType,
+    DigitalInputPortConfigType,
+    ArbitraryWaveFormConfigType,
+    DigitalOutputPortConfigType,
+    IntegrationWeightConfigType,
+    OPX1000ControllerConfigType,
+    CompressedWaveFormConfigType,
+    AnalogOutputPortConfigTypeOctoDac,
+)
+from qm.grpc.qua_config import (
+    QuaConfig,
+    QuaConfigMatrix,
+    QuaConfigSticky,
+    QuaConfigMixerDec,
+    QuaConfigPulseDec,
+    QuaConfigDeviceDec,
+    QuaConfigMixInputs,
+    QuaConfigElementDec,
+    QuaConfigHoldOffset,
+    QuaConfigOscillator,
+    QuaConfigQuaConfigV1,
+    QuaConfigSingleInput,
+    QuaConfigWaveformDec,
+    QuaConfigControllerDec,
+    QuaConfigElementThread,
+    QuaConfigOctoDacFemDec,
+    QuaConfigPortReference,
+    QuaConfigMultipleInputs,
+    QuaConfigAdcPortReference,
+    QuaConfigDacPortReference,
+    QuaConfigPulseDecOperation,
+    QuaConfigAnalogInputPortDec,
+    QuaConfigDigitalWaveformDec,
+    QuaConfigAnalogOutputPortDec,
+    QuaConfigConstantWaveformDec,
+    QuaConfigDigitalInputPortDec,
+    QuaConfigArbitraryWaveformDec,
+    QuaConfigDigitalOutputPortDec,
+    QuaConfigIntegrationWeightDec,
+    QuaConfigCompressedWaveformDec,
+    QuaConfigSingleInputCollection,
+    QuaConfigDigitalInputPortReference,
+    QuaConfigDigitalOutputPortReference,
+    QuaConfigOctoDacAnalogOutputPortDec,
+    QuaConfigDigitalInputPortDecPolarity,
+)
 
 
 def convert_msg_to_config(config: QuaConfig) -> DictQuaConfig:
-    msg_dict = config.to_dict()
-
-    if "v1Beta" in msg_dict:
-        return _convert_v1_beta(msg_dict["v1Beta"])
-    else:
-        raise Exception("Invalid config")
+    return _convert_v1_beta(config.v1_beta)
 
 
-def _convert_mixers(mixers):
-    if mixers is None:
-        return {}
-
-    ret = {}
+def _convert_mixers(mixers: Dict[str, QuaConfigMixerDec]) -> Dict[str, List[MixerConfigType]]:
+    ret: Dict[str, List[MixerConfigType]] = {}
     for name, data in mixers.items():
-        temp_list = []
-        for correction in data["correction"]:
-            if "frequencyDouble" in correction:
-                frequency = float(correction["frequencyDouble"])
-            elif "frequency" in correction:
-                frequency = float(correction["frequency"])
+        temp_list: List[MixerConfigType] = []
+        for correction in data.correction:
+            if correction.frequency_double:
+                frequency = correction.frequency_double
             else:
-                frequency = 0.0
+                frequency = correction.frequency
 
-            if "frequencyNegative" in correction:
-                if bool(correction["frequencyNegative"]):
-                    frequency = -frequency
+            if correction.frequency_negative:
+                frequency = -frequency
 
-            if "loFrequencyDouble" in correction:
-                lo_frequency = float(correction["loFrequencyDouble"])
-            elif "loFrequency" in correction:
-                lo_frequency = float(correction["loFrequency"])
+            if correction.lo_frequency_double:
+                lo_frequency = correction.lo_frequency_double
             else:
-                lo_frequency = 0.0
+                lo_frequency = correction.lo_frequency
 
-            temp_dict = {
+            temp_dict: MixerConfigType = {
                 "intermediate_frequency": frequency,
                 "lo_frequency": lo_frequency,
-                "correction": _convert_matrix(correction["correction"]),
+                "correction": _convert_matrix(correction.correction),
             }
             temp_list.append(temp_dict)
 
@@ -50,437 +103,360 @@ def _convert_mixers(mixers):
     return ret
 
 
-def _convert_matrix(matrix):
-    if "v00" in matrix:
-        v00 = matrix["v00"]
-    else:
-        v00 = 0.0
-
-    if "v01" in matrix:
-        v01 = matrix["v01"]
-    else:
-        v01 = 0.0
-
-    if "v10" in matrix:
-        v10 = matrix["v10"]
-    else:
-        v10 = 0.0
-    if "v11" in matrix:
-        v11 = matrix["v11"]
-    else:
-        v11 = 0.0
-
-    return [v00, v01, v10, v11]
+def _convert_matrix(matrix: QuaConfigMatrix) -> Tuple[Number, Number, Number, Number]:
+    return matrix.v00, matrix.v01, matrix.v10, matrix.v11
 
 
-def _convert_integration_weights(integration_weights):
-    if integration_weights is None:
-        return {}
-
-    ret = {}
+def _convert_integration_weights(
+    integration_weights: Dict[str, QuaConfigIntegrationWeightDec]
+) -> Dict[str, IntegrationWeightConfigType]:
+    ret: Dict[str, IntegrationWeightConfigType] = {}
     for name, data in integration_weights.items():
-        ret[name] = {
-            "cosine": [(s.get("value", 0.0), s.get("length", 0)) for s in data["cosine"]],
-            "sine": [(s.get("value", 0.0), s.get("length", 0)) for s in data["sine"]],
+        tmp: IntegrationWeightConfigType = {
+            "cosine": [(s.value, s.length) for s in data.cosine],
+            "sine": [(s.value, s.length) for s in data.sine],
         }
+        ret[name] = tmp
     return ret
 
 
-def _convert_digital_wave_forms(digital_wave_forms):
-    if digital_wave_forms is None:
-        return {}
-
-    ret = {}
+def _convert_digital_wave_forms(
+    digital_wave_forms: Dict[str, QuaConfigDigitalWaveformDec]
+) -> Dict[str, DigitalWaveformConfigType]:
+    ret: Dict[str, DigitalWaveformConfigType] = {}
     for name, data in digital_wave_forms.items():
-        temp_list = []
-        for sample in data["samples"]:
-            value = 0
-            if "value" in sample:
-                value = 1
-
-            if "length" in sample:
-                temp_list.append((value, sample["length"]))
-            else:
-                temp_list.append((value, 0))
+        temp_list: List[Tuple[int, int]] = []
+        for sample in data.samples:
+            value = int(bool(sample.value))
+            temp_list.append((value, sample.length))
 
         ret[name] = {"samples": temp_list}
     return ret
 
 
-def _convert_wave_forms(wave_forms):
-    if wave_forms is None:
-        return {}
-
-    ret = {}
+def _convert_wave_forms(
+    wave_forms: Dict[str, QuaConfigWaveformDec]
+) -> Dict[str, Union[ArbitraryWaveFormConfigType, ConstantWaveFormConfigType, CompressedWaveFormConfigType]]:
+    ret: Dict[str, Union[ArbitraryWaveFormConfigType, ConstantWaveFormConfigType, CompressedWaveFormConfigType]] = {}
     for name, data in wave_forms.items():
-        if "arbitrary" in data:
-            data = data["arbitrary"]
+        key_name, curr_waveform = betterproto.which_one_of(data, "waveform_oneof")
+        if isinstance(curr_waveform, QuaConfigArbitraryWaveformDec):
 
-            ret[name] = {}
-            ret[name]["samples"] = data["samples"]
-            ret[name]["type"] = "arbitrary"
-            ret[name]["is_overridable"] = data.get("isOverridable", False)
+            arbitrary_waveform_dict: ArbitraryWaveFormConfigType = {
+                "type": "arbitrary",
+                "samples": curr_waveform.samples,
+                "is_overridable": curr_waveform.is_overridable,
+            }
+            if isinstance(curr_waveform.max_allowed_error, float):
+                arbitrary_waveform_dict["max_allowed_error"] = curr_waveform.max_allowed_error
+            if isinstance(curr_waveform.sampling_rate, float):
+                arbitrary_waveform_dict["sampling_rate"] = curr_waveform.sampling_rate
+            ret[name] = arbitrary_waveform_dict
 
-            max_allowed_error = data.get("maxAllowedError")
-            if max_allowed_error is not None:
-                ret[name]["max_allowed_error"] = max_allowed_error
-
-            sampling_rate = data.get("samplingRate")
-            if sampling_rate is not None:
-                ret[name]["sampling_rate"] = sampling_rate
-
-        elif "constant" in data:
-            ret[name] = data["constant"]
-            if "sample" not in ret[name]:
-                ret[name]["sample"] = 0.0
-            ret[name]["type"] = "constant"
-        elif "compressed" in data:
-            ret[name] = {}
-            ret[name]["samples"] = data["compressed"]["samples"]
-            ret[name]["sample_rate"] = data["compressed"]["sampleRate"]
-            ret[name]["type"] = "compressed"
+        elif isinstance(curr_waveform, QuaConfigConstantWaveformDec):
+            constant_waveform_dict: ConstantWaveFormConfigType = {
+                "type": "constant",
+                "sample": curr_waveform.sample,
+            }
+            ret[name] = constant_waveform_dict
+        elif isinstance(curr_waveform, QuaConfigCompressedWaveformDec):
+            warnings.warn("Compressed waveform is deprecated.", DeprecationWarning)
+            compressed_waveform_dict: CompressedWaveFormConfigType = {
+                "type": "compressed",
+                "samples": curr_waveform.samples,
+                "sample_rate": curr_waveform.sample_rate,
+            }
+            ret[name] = compressed_waveform_dict
+        else:
+            raise Exception(f"Unknown waveform type - {key_name}")
 
     return ret
 
 
-def _convert_pulses(pulses):
-    if pulses is None:
-        return {}
-
+def _convert_pulses(pulses: Dict[str, QuaConfigPulseDec]) -> Dict[str, PulseConfigType]:
     ret = {}
-
     for name, data in pulses.items():
-        temp_dict = {
-            "length": data.get("length"),
+        temp_dict: PulseConfigType = {
+            "length": data.length,
+            "waveforms": data.waveforms,
+            "integration_weights": data.integration_weights,
+            "operation": QuaConfigPulseDecOperation(data.operation).name.lower(),
         }
-
-        waveforms = data.get("waveforms")
-        if waveforms is not None:
-            temp_dict["waveforms"] = waveforms
-
-        digital_markers = data.get("digitalMarker")
-        if digital_markers is not None:
-            temp_dict["digital_marker"] = digital_markers
-
-        integration_weights = data.get("integrationWeights")
-        if integration_weights is not None:
-            temp_dict["integration_weights"] = integration_weights
-
-        if "operation" in data:
-            for item in QuaConfigPulseDecOperation:
-                if item.value == data["operation"]:
-                    temp_dict["operation"] = item.name.lower()
-        else:
-            temp_dict["operation"] = "measurement"
-
+        if isinstance(data.digital_marker, str):
+            temp_dict["digital_marker"] = data.digital_marker
         ret[name] = temp_dict
     return ret
 
 
 def _convert_v1_beta(config: QuaConfigQuaConfigV1) -> DictQuaConfig:
-    results = {
+    if config.control_devices:
+        controllers = _convert_controller_types(config.control_devices)
+    elif config.controllers:
+        controllers = {name: _convert_controller(controller) for name, controller in config.controllers.items()}
+    else:
+        controllers = {}
+    result: DictQuaConfig = {
         "version": 1,
-        "controllers": _convert_controllers(config.get("controllers")),
-        "oscillators": _convert_oscillators(config.get("oscillators")),
-        "elements": _convert_elements(config.get("elements")),
-        "pulses": _convert_pulses(config.get("pulses")),
-        "waveforms": _convert_wave_forms(config.get("waveforms")),
-        "digital_waveforms": _convert_digital_wave_forms(config.get("digitalWaveforms")),
-        "integration_weights": _convert_integration_weights(config.get("integrationWeights")),
-        "mixers": _convert_mixers(config.get("mixers")),
+        "controllers": controllers,
+        "oscillators": _convert_oscillators(config.oscillators),
+        "elements": _convert_elements(config.elements),
+        "pulses": _convert_pulses(config.pulses),
+        "waveforms": _convert_wave_forms(config.waveforms),
+        "digital_waveforms": _convert_digital_wave_forms(config.digital_waveforms),
+        "integration_weights": _convert_integration_weights(config.integration_weights),
+        "mixers": _convert_mixers(config.mixers),
     }
-    return cast(DictQuaConfig, results)
+    return result
 
 
-def _convert_controllers(controllers):
-    if controllers is None:
-        return {}
+def _convert_controller(data: QuaConfigControllerDec) -> ControllerConfigType:
+    return {
+        "type": cast(Literal["opx", "opx1"], data.type),
+        "analog_outputs": _convert_controller_analog_outputs(data.analog_outputs),
+        "analog_inputs": _convert_controller_analog_inputs(data.analog_inputs),
+        "digital_outputs": _convert_controller_digital_outputs(data.digital_outputs),
+        "digital_inputs": _convert_controller_digital_inputs(data.digital_inputs),
+    }
 
-    ret = {}
+
+def _convert_controller_types(
+    controllers: Dict[str, QuaConfigDeviceDec]
+) -> Dict[str, Union[ControllerConfigType, OPX1000ControllerConfigType]]:
+    ret: Dict[str, Union[ControllerConfigType, OPX1000ControllerConfigType]] = {}
     for name, data in controllers.items():
-        ret[name] = {"type": data["type"]}
-        if "analogOutputs" in data:
-            ret[name]["analog_outputs"] = _convert_controller_analog_outputs(data["analogOutputs"])
-        if "analogInputs" in data:
-            ret[name]["analog_inputs"] = _convert_controller_analog_inputs(data["analogInputs"])
-        if "digitalOutputs" in data:
-            ret[name]["digital_outputs"] = _convert_controller_digital_outputs(data["digitalOutputs"])
-
-        if "digitalInputs" in data:
-            ret[name]["digital_inputs"] = _convert_controller_digital_inputs(data["digitalInputs"])
+        if len(data.fems) == 1 and betterproto.serialized_on_wire(data.fems[1].opx):
+            ret[name] = _convert_controller(data.fems[1].opx)
+        else:
+            to_attach: OPX1000ControllerConfigType = {
+                "type": "opx1000",
+                "fems": {fem_idx: _convert_fem(fem.octo_dac) for fem_idx, fem in data.fems.items()},
+            }
+            ret[name] = to_attach
 
     return ret
 
 
-def _convert_inputs(inputs):
-    if inputs is None:
-        return {}
+def _convert_fem(data: QuaConfigOctoDacFemDec) -> FemConfigType:
+    ret: FemConfigType = {}
+    if data.analog_outputs:
+        ret["analog_outputs"] = _convert_octo_dac_fem_analog_outputs(data.analog_outputs)
+    if data.analog_inputs:
+        ret["analog_inputs"] = _convert_controller_analog_inputs(data.analog_inputs)
+    if data.digital_outputs:
+        ret["digital_outputs"] = _convert_controller_digital_outputs(data.digital_outputs)
+    if data.digital_inputs:
+        ret["digital_inputs"] = _convert_controller_digital_inputs(data.digital_inputs)
+    return ret
 
-    ret = {}
+
+def _convert_inputs(inputs: Dict[str, QuaConfigDigitalInputPortReference]) -> Dict[str, DigitalInputConfigType]:
+    ret: Dict[str, DigitalInputConfigType] = {}
     for name, data in inputs.items():
-        ret[name] = {"delay": data.get("delay", 0)}
-        ret[name]["buffer"] = data.get("buffer", 0)
-
-        if "output" in data:
-            # deprecation from 0.0.28
-            ret[name]["output"] = _port_reference(data["output"])
-        if "port" in data:
-            ret[name]["port"] = _port_reference(data["port"])
-
+        ret[name] = {"delay": data.delay, "buffer": data.buffer, "port": _port_reference(data.port)}
     return ret
 
 
-def _convert_digital_output(outputs):
-    if outputs is None:
-        return {}
-
+def _convert_digital_output(outputs: Dict[str, QuaConfigDigitalOutputPortReference]) -> Dict[str, PortReferenceType]:
     ret = {}
     for name, data in outputs.items():
-        ret[name] = _port_reference(data["port"])
+        ret[name] = _port_reference(data.port)
 
     return ret
 
 
-def _convert_single_input_collection(data):
+def _convert_single_input_collection(data: QuaConfigSingleInputCollection) -> InputCollectionConfigType:
     temp = {}
-    for input_info in data["inputs"].items():
-        temp[input_info[0]] = _port_reference(input_info[1])
+    for name, input_info in data.inputs.items():
+        temp[name] = _port_reference(input_info)
 
-    res = {"inputs": temp}
+    res: InputCollectionConfigType = {"inputs": temp}
     return res
 
 
-def _convert_multiple_inputs(data):
+def _convert_multiple_inputs(data: QuaConfigMultipleInputs) -> InputCollectionConfigType:
     temp = {}
-    for input_info in data["inputs"].items():
-        temp[input_info[0]] = _port_reference(input_info[1])
+    for name, input_info in data.inputs.items():
+        temp[name] = _port_reference(input_info)
 
-    res = {"inputs": temp}
+    res: InputCollectionConfigType = {"inputs": temp}
     return res
 
 
-def _convert_oscillators(oscillator):
-    if oscillator is None:
-        return {}
-
-    ret = {}
+def _convert_oscillators(oscillator: Dict[str, QuaConfigOscillator]) -> Dict[str, OscillatorConfigType]:
+    ret: Dict[str, OscillatorConfigType] = {}
     for name, data in oscillator.items():
-        oscillator_config_data = {}
-        if "intermediateFrequencyDouble" in data:
-            freq = data["intermediateFrequencyDouble"]
+        oscillator_config_data: OscillatorConfigType = {}
+        if data.intermediate_frequency_double:
+            freq = data.intermediate_frequency_double
             oscillator_config_data["intermediate_frequency"] = freq
-        elif "intermediateFrequency" in data:
-            freq = int(data["intermediateFrequency"])
+        elif data.intermediate_frequency:
+            freq = int(data.intermediate_frequency)
             oscillator_config_data["intermediate_frequency"] = freq
-        if "mixer" in data:
-            if "mixer" in data["mixer"]:
-                oscillator_config_data["mixer"] = data["mixer"]["mixer"]
-            if "loFrequencyDouble" in data["mixer"]:
-                lo_freq = data["mixer"]["loFrequencyDouble"]
+        if betterproto.serialized_on_wire(data.mixer):
+            if data.mixer.mixer:
+                oscillator_config_data["mixer"] = data.mixer.mixer
+            if data.mixer.lo_frequency_double:
+                lo_freq = data.mixer.lo_frequency_double
                 oscillator_config_data["lo_frequency"] = float(lo_freq)
-            elif "loFrequency" in data["mixer"]:
-                lo_freq = data["mixer"]["loFrequency"]
-                oscillator_config_data["lo_frequency"] = float(lo_freq)
+            elif data.mixer.lo_frequency:
+                lo_freq = data.mixer.lo_frequency
+                oscillator_config_data["lo_frequency"] = int(lo_freq)
         ret[name] = oscillator_config_data
     return ret
 
 
-def _convert_elements(elements):
-    if elements is None:
-        return {}
-
-    ret = {}
+def _convert_elements(elements: Dict[str, QuaConfigElementDec]) -> Dict[str, ElementConfigType]:
+    ret: Dict[str, ElementConfigType] = {}
     for name, data in elements.items():
-        element_config_data = {
-            "digitalInputs": _convert_inputs(data.get("digitalInputs")),
-            "digitalOutputs": _convert_digital_output(data.get("digitalOutputs")),
+        element_config_data: ElementConfigType = {
+            "digitalInputs": _convert_inputs(data.digital_inputs),
+            "digitalOutputs": _convert_digital_output(data.digital_outputs),
+            "outputs": _convert_element_output(data.outputs),
+            "operations": data.operations,
+            "singleInput": _convert_single_inputs(data.single_input),
+            "mixInputs": _convert_mix_inputs(data.mix_inputs),
+            "singleInputCollection": _convert_single_input_collection(data.single_input_collection),
+            "multipleInputs": _convert_multiple_inputs(data.multiple_inputs),
+            "hold_offset": _convert_hold_offset(data.hold_offset),
+            "sticky": _convert_sticky(data.sticky),
+            "thread": _convert_element_thread(data.thread),
         }
+        if data.smearing is not None:
+            element_config_data["smearing"] = data.smearing
+        if data.time_of_flight is not None:
+            element_config_data["time_of_flight"] = data.time_of_flight
+        if data.measurement_qe:
+            element_config_data["measurement_qe"] = data.measurement_qe
 
-        if "outputs" in data:
-            element_config_data["outputs"] = _convert_element_output(data.get("outputs"))
-
-        if "timeOfFlight" in data:
-            element_config_data["time_of_flight"] = int(data["timeOfFlight"])
-
-        if "smearing" in data:
-            element_config_data["smearing"] = int(data["smearing"])
-
-        if "namedOscillator" in data:
-            element_config_data["oscillator"] = str(data["namedOscillator"])
+        if data.named_oscillator:
+            element_config_data["oscillator"] = data.named_oscillator
         else:
-            sign = (-1) ** data.get("intermediateFrequencyNegative", False)
-            if "intermediateFrequencyDouble" in data:
-                freq = float(data["intermediateFrequencyDouble"])
-                element_config_data["intermediate_frequency"] = abs(freq) * sign
-            elif "intermediateFrequency" in data:
-                freq = int(data["intermediateFrequency"])
-                element_config_data["intermediate_frequency"] = abs(freq) * sign
-
-        if "operations" in data:
-            element_config_data["operations"] = data["operations"]
-
-        if "measurementQe" in data:
-            element_config_data["measurement_qe"] = data["measurementQe"]
-
-        if "singleInput" in data:
-            element_config_data["singleInput"] = _convert_single_inputs(data["singleInput"])
-        elif "mixInputs" in data:
-            element_config_data["mixInputs"] = _convert_mix_inputs(data["mixInputs"])
-        elif "singleInputCollection" in data:
-            element_config_data["singleInputCollection"] = _convert_single_input_collection(
-                data["singleInputCollection"]
-            )
-        elif "multipleInputs" in data:
-            element_config_data["multipleInputs"] = _convert_multiple_inputs(data["multipleInputs"])
-
-        if "holdOffset" in data:
-            element_config_data["hold_offset"] = _convert_hold_offset(data["holdOffset"])
-        if "sticky" in data:
-            element_config_data["sticky"] = _convert_sticky(data["sticky"])
-        if "thread" in data:
-            element_config_data["thread"] = _convert_element_thread(data["thread"])
+            sign = (-1) ** data.intermediate_frequency_negative
+            if data.intermediate_frequency_double:
+                element_config_data["intermediate_frequency"] = abs(data.intermediate_frequency_double) * sign
+            elif data.intermediate_frequency is not None:
+                element_config_data["intermediate_frequency"] = abs(data.intermediate_frequency) * sign
 
         ret[name] = element_config_data
 
     return ret
 
 
-def _convert_mix_inputs(mix_inputs):
-    res = {"I": _port_reference(mix_inputs["i"]), "Q": _port_reference(mix_inputs["q"])}
+def _convert_mix_inputs(mix_inputs: QuaConfigMixInputs) -> MixInputConfigType:
+    res: MixInputConfigType = {"I": _port_reference(mix_inputs.i), "Q": _port_reference(mix_inputs.q)}
 
-    mixer = mix_inputs.get("mixer")
+    mixer = mix_inputs.mixer
     if mixer is not None:
         res["mixer"] = mixer
 
-    if "loFrequencyDouble" in mix_inputs:
-        res["lo_frequency"] = float(mix_inputs["loFrequencyDouble"])
-    elif "loFrequency" in mix_inputs:
-        res["lo_frequency"] = int(mix_inputs["loFrequency"])
+    if mix_inputs.lo_frequency_double:
+        res["lo_frequency"] = mix_inputs.lo_frequency_double
     else:
-        res["lo_frequency"] = 0.0
+        res["lo_frequency"] = float(mix_inputs.lo_frequency)
 
     return res
 
 
-def _convert_single_inputs(single):
-    res = {"port": _port_reference(single["port"])}
-    return res
+def _convert_single_inputs(single: QuaConfigSingleInput) -> SingleInputConfigType:
+    return {"port": _port_reference(single.port)}
 
 
-def _convert_hold_offset(hold_offset):
-    res = {"duration": hold_offset["duration"]}
-    return res
+def _convert_hold_offset(hold_offset: QuaConfigHoldOffset) -> HoldOffsetConfigType:
+    return {"duration": hold_offset.duration}
 
 
-def _convert_sticky(sticky):
-    res = {
-        "analog": sticky.get("analog", True),
-        "digital": sticky.get("digital", False),
-        "duration": sticky.get("duration", 1) * 4,
+def _convert_sticky(sticky: QuaConfigSticky) -> StickyConfigType:
+    res: StickyConfigType = {
+        "analog": sticky.analog,
+        "digital": sticky.digital,
+        "duration": max(sticky.duration, 1) * 4,
     }
     return res
 
 
-def _convert_element_thread(element_thread):
-    return element_thread["threadName"]
+def _convert_element_thread(element_thread: QuaConfigElementThread) -> str:
+    return element_thread.thread_name
 
 
-def _convert_controller_analog_outputs(outputs):
-    if outputs is None:
-        return {}
-
+def _convert_controller_analog_outputs(
+    outputs: Dict[int, QuaConfigAnalogOutputPortDec]
+) -> Dict[int, AnalogOutputPortConfigType]:
     ret = {}
     for name, data in outputs.items():
-        port_info = {"offset": 0.0, "delay": 0, "shareable": False}
-        if "offset" in data:
-            port_info["offset"] = data["offset"]
-        if "filter" in data:
-            feedforward = []
-            if "feedforward" in data["filter"]:
-                feedforward = data["filter"]["feedforward"]
-
-            feedback = []
-            if "feedback" in data["filter"]:
-                feedback = data["filter"]["feedback"]
-
-            port_info["filter"] = {"feedforward": feedforward, "feedback": feedback}
-
-        if "delay" in data:
-            port_info["delay"] = data["delay"]
-
-        if "crosstalk" in data:
-            port_info["crosstalk"] = {int(k): v for k, v in data["crosstalk"].items()}
-        if "shareable" in data:
-            port_info["shareable"] = data["shareable"]
-
+        port_info: AnalogOutputPortConfigType = {
+            "offset": data.offset,
+            "delay": data.delay,
+            "shareable": data.shareable,
+            "filter": {"feedforward": data.filter.feedforward, "feedback": data.filter.feedback},
+            "crosstalk": data.crosstalk,
+        }
         ret[int(name)] = port_info
     return ret
 
 
-def _convert_controller_analog_inputs(inputs):
-    if inputs is None:
-        return {}
-
-    ret = {}
-    for name, data in inputs.items():
-        port_info = {"offset": 0.0, "gain_db": 0, "shareable": False}
-        if "offset" in data:
-            port_info["offset"] = data["offset"]
-
-        if "gainDb" in data:
-            port_info["gain_db"] = data["gainDb"]
-
-        if "shareable" in data:
-            port_info["shareable"] = data["shareable"]
-
-        ret[int(name)] = port_info
-    return ret
-
-
-def _convert_controller_digital_outputs(outputs):
-    if outputs is None:
-        return {}
-
+def _convert_octo_dac_fem_analog_outputs(
+    outputs: Dict[int, QuaConfigOctoDacAnalogOutputPortDec]
+) -> Dict[int, AnalogOutputPortConfigTypeOctoDac]:
     ret = {}
     for name, data in outputs.items():
-        port_info = {"shareable": False, "inverted": False}
-        if "shareable" in data:
-            port_info["shareable"] = data["shareable"]
-        if "inverted" in data:
-            port_info["inverted"] = data["inverted"]
+        port_info: AnalogOutputPortConfigTypeOctoDac = {
+            "offset": data.offset,
+            "delay": data.delay,
+            "shareable": data.shareable,
+            "filter": {"feedforward": data.filter.feedforward, "feedback": data.filter.feedback},
+            "crosstalk": data.crosstalk,
+            "upsampling_mode": cast(Literal["mw", "pulse"], data.upsampling_mode.name),
+            "output_mode": cast(Literal["direct", "amplified"], data.output_mode.name),
+        }
+        if data.sampling_rate.value:
+            port_info["sampling_rate"] = {1: 1e9, 2: 2e9}[data.sampling_rate.value]
         ret[int(name)] = port_info
     return ret
 
 
-def _convert_controller_digital_inputs(inputs):
-    if inputs is None:
-        return {}
-
-    ret = {}
-    for name, data in inputs.items():
-        port_info = {"polarity": "RISING", "shareable": False}
-        if "polarity" in data:
-            port_info["polarity"] = data["polarity"]
-        if "deadtime" in data:
-            port_info["deadtime"] = data["deadtime"]
-        if "threshold" in data:
-            port_info["threshold"] = data["threshold"]
-        if "shareable" in data:
-            port_info["shareable"] = data["shareable"]
-
-        ret[int(name)] = port_info
+def _convert_controller_analog_inputs(
+    inputs: Dict[int, QuaConfigAnalogInputPortDec]
+) -> Dict[int, AnalogInputPortConfigType]:
+    ret: Dict[int, AnalogInputPortConfigType] = {}
+    for idx, data in inputs.items():
+        port_info: AnalogInputPortConfigType = {
+            "offset": data.offset,
+            "gain_db": data.gain_db if data.gain_db is not None else 0,
+            "shareable": data.shareable,
+        }
+        ret[idx] = port_info
     return ret
 
 
-def _convert_element_output(outputs):
-    if outputs is None:
-        return {}
+def _convert_controller_digital_outputs(
+    outputs: Dict[int, QuaConfigDigitalOutputPortDec]
+) -> Dict[int, DigitalOutputPortConfigType]:
+    return {idx: {"shareable": data.shareable, "inverted": data.inverted} for idx, data in outputs.items()}
 
-    ret = {}
-    for name, data in outputs.items():
-        ret[name] = _port_reference(data)
+
+def _convert_controller_digital_inputs(
+    inputs: Dict[int, QuaConfigDigitalInputPortDec]
+) -> Dict[int, DigitalInputPortConfigType]:
+    ret: Dict[int, DigitalInputPortConfigType] = {}
+    for idx, data in inputs.items():
+        port_info: DigitalInputPortConfigType = {
+            "polarity": cast(Literal["RISING", "FALLING"], QuaConfigDigitalInputPortDecPolarity(data.polarity).name),
+            "deadtime": data.deadtime,
+            "threshold": data.threshold,
+            "shareable": data.shareable,
+        }
+        ret[idx] = port_info
     return ret
 
 
-def _port_reference(data):
-    return data["controller"], data["number"]
+def _convert_element_output(outputs: Dict[str, QuaConfigAdcPortReference]) -> Dict[str, PortReferenceType]:
+    return {name: _port_reference(data) for name, data in outputs.items()}
+
+
+def _port_reference(
+    data: Union[QuaConfigAdcPortReference, QuaConfigDacPortReference, QuaConfigPortReference]
+) -> PortReferenceType:
+    if data.fem:
+        return data.controller, data.fem, data.number
+    else:
+        return data.controller, data.number

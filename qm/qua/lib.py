@@ -2,8 +2,8 @@ import random
 from functools import wraps
 from collections.abc import Iterable
 
-import qm.program.expressions as _exp
-from qm.qua._dsl import assign, declare, _Expression, _to_expression
+import qm.qua._expressions as _exp
+from qm.qua._dsl import assign, declare
 from qm.utils import get_iterable_elements_datatype as _get_iterable_elements_datatype
 
 
@@ -26,7 +26,7 @@ def _sanitize_arg(arg):
 
 
 def call_library_function(lib_name, func_name, args):
-    return _Expression(_exp.lib_func(lib_name, func_name, *[_to_expression(_sanitize_arg(x)) for x in args]))
+    return _exp.QuaExpression(_exp.lib_func(lib_name, func_name, *[_exp.to_expression(_sanitize_arg(x)) for x in args]))
 
 
 class Math:

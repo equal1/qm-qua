@@ -3,7 +3,7 @@ import time
 import logging
 from enum import Enum, auto
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Mapping, Optional, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Mapping, Optional
 
 import numpy as np
 from octave_sdk import Octave, RFInputLOSource
@@ -20,7 +20,6 @@ from octave_sdk.grpc.quantummachines.octave.api.v1 import (
     RfDownConvUpdate,
     IfDownConvUpdateMode,
     SynthUpdateMainOutput,
-    SynthUpdateSynthOutput,
     IfDownConvUpdateChannel,
     RfDownConvUpdateLoInput,
     RfDownConvUpdateRfInput,
@@ -74,6 +73,7 @@ if TYPE_CHECKING:
     from qm.QuantumMachine import QuantumMachine
 
 CALIBRATION_INPUT = 2
+OTHER_INPUT = 1
 
 
 class DConvQuadrature(Enum):
@@ -109,7 +109,7 @@ class LOFrequencyCalibrationResult:
     plugin_data: Any = None
 
 
-MixerCalibrationResults = Dict[Tuple[Number, float], LOFrequencyCalibrationResult]
+MixerCalibrationResults = Dict[Tuple[Number, Optional[float]], LOFrequencyCalibrationResult]
 
 
 @dataclass
@@ -393,7 +393,7 @@ class OctaveMixerCalibration:
                     with else_():
                         assign(go_on, False)
 
-        return cast(Program, prog)
+        return prog
 
     def _set_octave_for_calibration(
         self, output_channel_index: int, params: AutoCalibrationParams, element_input: UpconvertedInput
@@ -407,22 +407,16 @@ class OctaveMixerCalibration:
                 ModuleReference(type=OctaveModule.OCTAVE_MODULE_RF_UPCONVERTER, index=5),
                 ModuleReference(type=OctaveModule.OCTAVE_MODULE_RF_DOWNCONVERTER, index=CALIBRATION_INPUT),
                 ModuleReference(type=OctaveModule.OCTAVE_MODULE_IF_DOWNCONVERTER, index=CALIBRATION_INPUT),
+                ModuleReference(type=OctaveModule.OCTAVE_MODULE_SYNTHESIZER, index=4),
+                ModuleReference(type=OctaveModule.OCTAVE_MODULE_RF_DOWNCONVERTER, index=OTHER_INPUT),
+                ModuleReference(type=OctaveModule.OCTAVE_MODULE_IF_DOWNCONVERTER, index=OTHER_INPUT),
             ]
         ).state.updates
 
         state_restore_updates = [
             current_state[5],  # take RF-downconverter #2 as is
             current_state[6],  # take IF-downconverter #2 as is
-            SingleUpdate(
-                synth=SynthUpdate(
-                    index=4,
-                    synth_output=SynthUpdateSynthOutput(disabled=True),
-                    gain=0,
-                    digital_attn=63,
-                    main_output=SynthUpdateMainOutput.MAIN_OUTPUT_OFF,
-                    secondary_output=SynthUpdateSecondaryOutput.SECONDARY_OUTPUT_OFF,
-                )
-            ),
+            current_state[7],  # take SYNTH #4 as is (the calibration synth)
         ]
         for upconverter_index in (1, 2, 3, 4, 5):
             upconverter_state = current_state[upconverter_index - 1].rf_up_conv
@@ -464,6 +458,14 @@ class OctaveMixerCalibration:
                 )
             ),
             SingleUpdate(
+                rf_down_conv=RfDownConvUpdate(
+                    index=OTHER_INPUT,
+                    enabled=False,
+                    lo_input=RfDownConvUpdateLoInput.LO_INPUT_1,
+                    rf_input=RfDownConvUpdateRfInput.RF_INPUT_DISCONNECT,
+                )
+            ),
+            SingleUpdate(
                 synth=SynthUpdate(
                     index=4,
                     gain=0xFFFF,
@@ -491,8 +493,20 @@ class OctaveMixerCalibration:
                     ),
                 )
             ),
+            SingleUpdate(
+                if_down_conv=IfDownConvUpdate(
+                    index=OTHER_INPUT,
+                    channel1=IfDownConvUpdateChannel(
+                        mode=IfDownConvUpdateMode.MODE_OFF,
+                        coupling=IfDownConvUpdateCoupling.COUPLING_AC,
+                    ),
+                    channel2=IfDownConvUpdateChannel(
+                        mode=IfDownConvUpdateMode.MODE_OFF,
+                        coupling=IfDownConvUpdateCoupling.COUPLING_AC,
+                    ),
+                )
+            ),
         ]
-
         for index in (1, 2, 3, 4, 5):
             if index != output_channel_index:
                 updates.append(
@@ -510,7 +524,7 @@ class OctaveMixerCalibration:
                     SingleUpdate(
                         rf_up_conv=RfUpConvUpdate(
                             index=index,
-                            fast_switch_mode=RfUpConvUpdateFastSwitchMode.FAST_SWITCH_MODE_ON,
+                            fast_switch_mode=RfUpConvUpdateFastSwitchMode.FAST_SWITCH_MODE_OFF,
                             enabled=True
                             # YR - I added the enabled update to make the assertion down the code pass
                         )

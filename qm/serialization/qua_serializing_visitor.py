@@ -1,5 +1,6 @@
 import re
-from typing import List, Union, Optional
+import logging
+from typing import Any, Dict, List, Callable, Optional
 
 import betterproto
 from betterproto.lib.google.protobuf import Value, ListValue
@@ -7,68 +8,83 @@ from betterproto.lib.google.protobuf import Value, ListValue
 import qm
 from qm.grpc import qua
 from qm.exceptions import QmQuaException
+from qm.grpc.qua_config import QuaConfig
+from qm.utils.protobuf_utils import Node
 from qm.serialization.qua_node_visitor import QuaNodeVisitor
 from qm.serialization.expression_serializing_visitor import ExpressionSerializingVisitor
+from qm.grpc.qua import (
+    QuaProgram,
+    QuaProgramType,
+    QuaProgramScript,
+    QuaProgramIfStatement,
+    QuaProgramAnyStatement,
+    QuaProgramForStatement,
+    QuaProgramPlayStatement,
+    QuaProgramWaitStatement,
+    QuaProgramAlignStatement,
+    QuaProgramPauseStatement,
+    QuaProgramVarDeclaration,
+    QuaProgramBinaryExpression,
+    QuaProgramForEachStatement,
+    QuaProgramMeasureStatement,
+    QuaProgramVarRefExpression,
+    QuaProgramLiteralExpression,
+    QuaProgramZRotationStatement,
+    QuaProgramAnyScalarExpression,
+    QuaProgramAssignmentStatement,
+    QuaProgramRampToZeroStatement,
+    QuaProgramResetFrameStatement,
+    QuaProgramResetPhaseStatement,
+    QuaProgramSetDcOffsetStatement,
+    QuaProgramStatementsCollection,
+    QuaProgramArrayVarRefExpression,
+    QuaProgramStrictTimingStatement,
+    QuaProgramWaitForTriggerStatement,
+    QuaProgramUpdateFrequencyStatement,
+    QuaProgramUpdateCorrectionStatement,
+    QuaProgramFastFrameRotationStatement,
+    QuaProgramAdvanceInputStreamStatement,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class QuaSerializingVisitor(QuaNodeVisitor):
     def __init__(self) -> None:
         super().__init__()
         self._indent = 0
-        self._lines = []
-        self.tags = []
+        self._lines: List[str] = []
+        self.tags: List[str] = []
 
-    def out(self):
+    def out(self) -> str:
         return "\n".join(["from qm.qua import *", ""] + self._lines + [""])
 
-    def _out_lines(self):
+    def _out_lines(self) -> List[str]:
         return self._lines
 
-    def _default_enter(self, node) -> bool:
-        name = f"{type(node).__module__}.{type(node).__name__}"
-        statement = _statements.get(name, None)
-        block = _blocks.get(name, None)
-        if name not in _dont_print:
-            print(f"entering {name}")
-        if statement:
+    def _default_enter(self, node: Node) -> bool:
+        if not isinstance(node, tuple(_dont_print)):
+            logger.info(f"entering {type(node).__module__}.{type(node).__name__}")
+        statement: Optional[Callable[[Node], str]] = _statements.get(type(node), None)  # type: ignore[assignment]
+
+        if statement is not None:
             line = statement(node)
             self._line(line)
-        if block:
+
+        block: Optional[Callable[[Node], str]] = _blocks.get(type(node), None)  # type: ignore[assignment]
+        if block is not None:
             self._enter_block(block(node))
         return statement is None
 
     @staticmethod
-    def _get_result_name(value):
-        value = value.list_value.values[-1]
-        if value.string_value != "":
-            return value.string_value
-        else:
-            return QuaSerializingVisitor._get_result_name(value)
-
-    @staticmethod
-    def _search_adc_trace(values):
-        ADC_TRACE_NAME = "@macro_adc_trace"
-        for value in values:
-            if isinstance(value, str):
-                if value == ADC_TRACE_NAME:
-                    return True
-                else:
-                    return None
-            elif value.string_value == ADC_TRACE_NAME:
-                return True
-            elif len(value.list_value) > 0:
-                return QuaSerializingVisitor._search_adc_trace(value.list_value)
-        return False
-
-    @staticmethod
-    def _search_auto_added_stream(values: List[Value]):
+    def _search_auto_added_stream(values: List[Value]) -> bool:
         is_auto_added_result = isinstance(values[2], Value) and values[2].string_value == "auto"
         return is_auto_added_result
 
-    def _fix_legacy_save(self, sp_line, node: ListValue):
-        sp_line = sp_line.split(".")
-        trace_name = sp_line[0]
-        save_name = sp_line[-1].split('"')[1]
+    def _fix_legacy_save(self, sp_line: str, node: ListValue) -> None:
+        split_sp_line = sp_line.split(".")
+        trace_name = split_sp_line[0]
+        save_name = split_sp_line[-1].split('"')[1]
         save_name = re.sub(r"_input\d", "", save_name)
         is_auto_added_stream = self._search_auto_added_stream(node.values)
         if is_auto_added_stream:
@@ -96,7 +112,7 @@ class QuaSerializingVisitor(QuaNodeVisitor):
         self._line(save_line)
         return False
 
-    def enter_qm_grpc_qua_QuaProgramVarDeclaration(self, node: qua.QuaProgramVarDeclaration):
+    def enter_qm_grpc_qua_QuaProgramVarDeclaration(self, node: qua.QuaProgramVarDeclaration) -> bool:
         args = self._get_declare_var_args(node)
 
         if node.is_input_stream:
@@ -110,27 +126,23 @@ class QuaSerializingVisitor(QuaNodeVisitor):
 
         return False
 
-    def enter_betterproto_lib_google_protobuf_ListValue(self, node: betterproto.lib.google.protobuf.ListValue):
-        name = f"{type(node).__module__}.{type(node).__name__}"
-        statement = _statements.get(name, None)
-        line = statement(node)
+    def enter_betterproto_lib_google_protobuf_ListValue(self, node: betterproto.lib.google.protobuf.ListValue) -> bool:
+        line = _stream_processing_terminal_statement(node)
         self._line(line)
-        if name == "betterproto.lib.google.protobuf.ListValue":
-            self._fix_legacy_save(line, node)
-
+        self._fix_legacy_save(line, node)
         return False
 
-    def leave_qm_grpc_qua_QuaProgram(self, node: qm.grpc.qua.QuaProgram):
+    def leave_qm_grpc_qua_QuaProgram(self, node: qm.grpc.qua.QuaProgram) -> bool:
         if self._lines[-1].find("with stream_processing():") > 0:
             self._lines.pop()
         return False
 
-    def _get_declare_var_args(self, node):
+    def _get_declare_var_args(self, node: QuaProgramVarDeclaration) -> Dict[str, str]:
         size = node.size
         dim = node.dim
         args = {}
         if dim > 0:
-            args["size"] = size
+            args["size"] = f"{size}"
         if dim > 0 and len(node.value) > 0:
             args["value"] = "[" + ", ".join([_ser_exp(it) for it in node.value]) + "]"
         elif len(node.value) == 1:
@@ -139,7 +151,7 @@ class QuaSerializingVisitor(QuaNodeVisitor):
             del args["size"]
         return args
 
-    def enter_qm_grpc_qua_QuaProgramMeasureStatement(self, node: qua.QuaProgramMeasureStatement):
+    def enter_qm_grpc_qua_QuaProgramMeasureStatement(self, node: qua.QuaProgramMeasureStatement) -> bool:
         if node.timestamp_label and node.timestamp_label not in self.tags:
             self._line(f"{node.timestamp_label} = declare_stream()")
             self.tags.append(node.timestamp_label)
@@ -151,19 +163,19 @@ class QuaSerializingVisitor(QuaNodeVisitor):
             self.tags.append(node.stream_as)
         return self._default_enter(node)
 
-    def visit_qm_grpc_qua_QuaProgramForStatement(self, node: qua.QuaProgramForStatement):
+    def visit_qm_grpc_qua_QuaProgramForStatement(self, node: qua.QuaProgramForStatement) -> None:
         if len(node.body.statements) > 0:
             super()._default_visit(node.body)
         else:
             self._line("pass")
 
-    def visit_qm_grpc_qua_QuaProgramForEachStatement(self, node: qua.QuaProgramForEachStatement):
+    def visit_qm_grpc_qua_QuaProgramForEachStatement(self, node: qua.QuaProgramForEachStatement) -> None:
         if len(node.body.statements) > 0:
             super()._default_visit(node.body)
         else:
             self._line("pass")
 
-    def visit_qm_grpc_qua_QuaProgramIfStatement(self, node: qua.QuaProgramIfStatement):
+    def visit_qm_grpc_qua_QuaProgramIfStatement(self, node: qua.QuaProgramIfStatement) -> None:
         if len(node.body.statements) > 0:
             super()._default_visit(node.body)
         else:
@@ -187,7 +199,7 @@ class QuaSerializingVisitor(QuaNodeVisitor):
             self._enter_block()
             super()._default_visit(else_block)
 
-    def visit_qm_grpc_qua_QuaProgramPlayStatement(self, node: qua.QuaProgramPlayStatement):
+    def visit_qm_grpc_qua_QuaProgramPlayStatement(self, node: qua.QuaProgramPlayStatement) -> None:
         pulse_one_of, value = betterproto.which_one_of(node, "pulseType")
         if pulse_one_of == "named_pulse":
             pulse = f'"{node.named_pulse.name}"'
@@ -224,7 +236,7 @@ class QuaSerializingVisitor(QuaNodeVisitor):
 
         if betterproto.serialized_on_wire(node.chirp):
             rate_one_of, value = betterproto.which_one_of(node.chirp, "rate")
-            if rate_one_of in ("scalar_rate", "array_rate"):
+            if isinstance(value, (QuaProgramAnyScalarExpression, QuaProgramArrayVarRefExpression)):
                 rate = ExpressionSerializingVisitor.serialize(value)
             else:
                 raise QmQuaException(f"Unknown chirp rate {rate_one_of}")
@@ -274,34 +286,32 @@ class QuaSerializingVisitor(QuaNodeVisitor):
             args_str = ""
         self._line(f'play({pulse}{amp}, "{element}"{args_str})')
 
-    def _default_leave(self, node):
-        name = f"{type(node).__module__}.{type(node).__name__}"
-        block = _blocks.get(name, None)
-        if block is not None:
+    def _default_leave(self, node: Node) -> None:
+        if isinstance(node, tuple(_blocks)):
             self._leave_block()
         super()._default_leave(node)
 
-    def _enter_block(self, line: Optional[str] = None):
+    def _enter_block(self, line: Optional[str] = None) -> None:
         if line is not None:
             self._line(line)
         self._indent += 1
 
-    def _leave_block(self):
+    def _leave_block(self) -> None:
         self._indent -= 1
 
-    def _line(self, line: str):
+    def _line(self, line: str) -> None:
         self._lines.append((self._indent * "    ") + line)
 
 
-def _ser_exp(value):
+def _ser_exp(value: Node) -> str:
     return ExpressionSerializingVisitor.serialize(value)
 
 
-def _dict_to_python_call(d: dict) -> str:
+def _dict_to_python_call(d: Dict[Any, Any]) -> str:
     return ", ".join([f"{k}={v}" for k, v in d.items()])
 
 
-def _ramp_to_zero_statement(node):
+def _ramp_to_zero_statement(node: QuaProgramRampToZeroStatement) -> str:
     args = []
     args.append(f'"{node.qe.name}"')
     if node.duration is not None:
@@ -309,7 +319,7 @@ def _ramp_to_zero_statement(node):
     return f'ramp_to_zero({", ".join(args)})'
 
 
-def _measure_statement(node: qua.QuaProgramMeasureStatement):
+def _measure_statement(node: qua.QuaProgramMeasureStatement) -> str:
     args = []
 
     amp = ""
@@ -338,7 +348,7 @@ def _measure_statement(node: qua.QuaProgramMeasureStatement):
     return f'measure({", ".join(args)})'
 
 
-def _wait_statement(node: qua.QuaProgramWaitStatement):
+def _wait_statement(node: qua.QuaProgramWaitStatement) -> str:
     args = []
     _, wait_value = betterproto.which_one_of(node.time, "expression_oneof")
     if wait_value is not None:
@@ -350,14 +360,14 @@ def _wait_statement(node: qua.QuaProgramWaitStatement):
     return f'wait({", ".join(args)})'
 
 
-def _align_statement(node):
+def _align_statement(node: QuaProgramAlignStatement) -> str:
     args = []
     for qe in node.qe:
         args.append(f'"{qe.name}"')
     return f'align({", ".join(args)})'
 
 
-def _wait_for_trigger_statement(node: qua.QuaProgramWaitForTriggerStatement):
+def _wait_for_trigger_statement(node: qua.QuaProgramWaitForTriggerStatement) -> str:
     args = []
     for qe in node.qe:
         args.append(f'"{qe.name}"')
@@ -373,14 +383,14 @@ def _wait_for_trigger_statement(node: qua.QuaProgramWaitForTriggerStatement):
     return f'wait_for_trigger({", ".join(args)})'
 
 
-def _frame_rotation_statement(node):
+def _frame_rotation_statement(node: QuaProgramZRotationStatement) -> str:
     args = []
     args.append(f"{ExpressionSerializingVisitor.serialize(node.value)}")
     args.append(f'"{node.qe.name}"')
     return f'frame_rotation_2pi({", ".join(args)})'
 
 
-def _fast_frame_rotation_statement(node):
+def _fast_frame_rotation_statement(node: QuaProgramFastFrameRotationStatement) -> str:
     args = []
     args.append(f"{ExpressionSerializingVisitor.serialize(node.cosine)}")
     args.append(f"{ExpressionSerializingVisitor.serialize(node.sine)}")
@@ -388,13 +398,13 @@ def _fast_frame_rotation_statement(node):
     return f'fast_frame_rotation({", ".join(args)})'
 
 
-def _reset_frame_statement(node):
+def _reset_frame_statement(node: QuaProgramResetFrameStatement) -> str:
     args = []
     args.append(f'"{node.qe.name}"')
     return f'reset_frame({", ".join(args)})'
 
 
-def _update_frequency_statement(node):
+def _update_frequency_statement(node: QuaProgramUpdateFrequencyStatement) -> str:
     args = []
     args.append(f'"{node.qe.name}"')
     args.append(f"{ExpressionSerializingVisitor.serialize(node.value)}")
@@ -403,7 +413,7 @@ def _update_frequency_statement(node):
     return f'update_frequency({", ".join(args)})'
 
 
-def _set_dc_offset_statement(node: qua.QuaProgramSetDcOffsetStatement):
+def _set_dc_offset_statement(node: qua.QuaProgramSetDcOffsetStatement) -> str:
     args = []
     args.append(f'"{node.qe.name}"')
     args.append(f'"{node.qe_input_reference}"')
@@ -411,7 +421,7 @@ def _set_dc_offset_statement(node: qua.QuaProgramSetDcOffsetStatement):
     return f'set_dc_offset({", ".join(args)})'
 
 
-def _advance_input_stream_statement(node):
+def _advance_input_stream_statement(node: QuaProgramAdvanceInputStreamStatement) -> str:
     if node.stream_array.name != "":
         input_stream = ExpressionSerializingVisitor.serialize(node.stream_array)
     elif node.stream_variable.name != "":
@@ -421,7 +431,7 @@ def _advance_input_stream_statement(node):
     return f"advance_input_stream({input_stream})"
 
 
-def _for_block_statement(node):
+def _for_block_statement(node: QuaProgramForStatement) -> str:
     condition = ExpressionSerializingVisitor.serialize(node.condition)
     if len(node.init.statements) == 0 and len(node.update.statements) == 0:
         if condition == "True":
@@ -445,7 +455,7 @@ def _for_block_statement(node):
         return f"with for_({ExpressionSerializingVisitor.serialize(init.target)},{ExpressionSerializingVisitor.serialize(init.expression)},{condition},{ExpressionSerializingVisitor.serialize(update.expression)}):"
 
 
-def _for_each_block_statement(node):
+def _for_each_block_statement(node: QuaProgramForEachStatement) -> str:
     variables = []
     arrays = []
     for it in node.iterator:
@@ -454,7 +464,7 @@ def _for_each_block_statement(node):
     return f'with for_each_(({",".join(variables)}),({",".join(arrays)})):'
 
 
-def _if_block_statement(node):
+def _if_block_statement(node: QuaProgramIfStatement) -> str:
     condition = ExpressionSerializingVisitor.serialize(node.condition)
     if node.unsafe is True:
         unsafe = ", unsafe=True"
@@ -463,11 +473,11 @@ def _if_block_statement(node):
     return f"with if_({condition}{unsafe}):"
 
 
-def _strict_timing_block_statement(_):
+def _strict_timing_block_statement(_: Any) -> str:
     return "with strict_timing_():"
 
 
-def _stream_processing_function(array):
+def _stream_processing_function(array: List[Value]) -> str:
     function = array[0].string_value
 
     if function == "average":
@@ -519,11 +529,11 @@ def _stream_processing_function(array):
         return "boolean_to_int()"
 
     if function == "demod":
-        if len(array[2].list_value) > 0:
+        if len(array[2].list_value.values) > 0:
             cos = _stream_processing_operator(array[2].list_value.values)
         else:
             cos = array[2].string_value
-        if len(array[3].list_value) > 0:
+        if len(array[3].list_value.values) > 0:
             sin = _stream_processing_operator(array[3].list_value.values)
         else:
             sin = array[3].string_value
@@ -639,14 +649,14 @@ def _default_stream_processing_chain(array: List[Value]) -> str:
     return f"{chain}"
 
 
-def _stream_processing_statement(node: Union[ListValue, Value]) -> str:
+def _stream_processing_statement(node: Value) -> str:
     if len(node.list_value.values) > 0:
         return _stream_processing_operator(node.list_value.values)
     else:
         return node.string_value
 
 
-def _stream_processing_terminal_statement(node: ListValue):
+def _stream_processing_terminal_statement(node: ListValue) -> str:
     last_index = len(node.values) - 1
     chain = _stream_processing_statement(node.values[last_index])
     terminal = node.values[0].string_value
@@ -654,57 +664,69 @@ def _stream_processing_terminal_statement(node: ListValue):
     return f'{chain}.{terminal}("{node.values[1].string_value}")'
 
 
-def _serialize(node):
+def _update_correction_statement(node: QuaProgramUpdateCorrectionStatement) -> str:
+    return (
+        f'update_correction("{node.qe.name}",{ExpressionSerializingVisitor.serialize(node.correction.c0)},'
+        f"{ExpressionSerializingVisitor.serialize(node.correction.c1)},"
+        f"{ExpressionSerializingVisitor.serialize(node.correction.c2)},"
+        f"{ExpressionSerializingVisitor.serialize(node.correction.c3)})"
+    )
+
+
+def _assignment_statement(node: QuaProgramAssignmentStatement) -> str:
+    return (
+        f"assign({ExpressionSerializingVisitor.serialize(node.target)}, "
+        f"{ExpressionSerializingVisitor.serialize(node.expression)})"
+    )
+
+
+def _serialize(node: Node) -> List[str]:
     visitor = QuaSerializingVisitor()
     visitor.visit(node)
     return visitor._out_lines()
 
 
 _blocks = {
-    "qm.grpc.qua.QuaProgram": lambda n: "with program() as prog:",
-    "qm.grpc.qua.QuaProgramForStatement": _for_block_statement,
-    "qm.grpc.qua.QuaProgramForEachStatement": _for_each_block_statement,
-    "qm.grpc.qua.QuaProgramIfStatement": _if_block_statement,
-    "qm.grpc.qua.QuaProgramStrictTimingStatement": _strict_timing_block_statement,
+    QuaProgram: lambda n: "with program() as prog:",
+    QuaProgramForStatement: _for_block_statement,
+    QuaProgramForEachStatement: _for_each_block_statement,
+    QuaProgramIfStatement: _if_block_statement,
+    QuaProgramStrictTimingStatement: _strict_timing_block_statement,
 }
+
 
 _statements = {
-    "qm.grpc.qua.QuaProgramMeasureStatement": _measure_statement,
-    "qm.grpc.qua.QuaProgramWaitStatement": _wait_statement,
-    "qm.grpc.qua.QuaProgramAssignmentStatement": lambda n: f"assign({ExpressionSerializingVisitor.serialize(n.target)}, "
-    f"{ExpressionSerializingVisitor.serialize(n.expression)})",
-    "qm.grpc.qua.QuaProgramPauseStatement": lambda n: "pause()",
-    "qm.grpc.qua.QuaProgramResetPhaseStatement": lambda n: f'reset_phase("{n.qe.name}")',
-    "qm.grpc.qua.QuaProgramUpdateFrequencyStatement": _update_frequency_statement,
-    "qm.grpc.qua.QuaProgramAlignStatement": _align_statement,
-    "qm.grpc.qua.QuaProgramWaitForTriggerStatement": _wait_for_trigger_statement,
-    "qm.grpc.qua.QuaProgramZRotationStatement": _frame_rotation_statement,
-    "qm.grpc.qua.QuaProgramRampToZeroStatement": _ramp_to_zero_statement,
-    "qm.grpc.qua.QuaProgramResetFrameStatement": _reset_frame_statement,
-    "betterproto.lib.google.protobuf.ListValue": _stream_processing_terminal_statement,
+    QuaProgramMeasureStatement: _measure_statement,
+    QuaProgramWaitStatement: _wait_statement,
+    QuaProgramAssignmentStatement: _assignment_statement,
+    QuaProgramPauseStatement: lambda n: "pause()",
+    QuaProgramResetPhaseStatement: lambda n: f'reset_phase("{n.qe.name}")',
+    QuaProgramUpdateFrequencyStatement: _update_frequency_statement,
+    QuaProgramAlignStatement: _align_statement,
+    QuaProgramWaitForTriggerStatement: _wait_for_trigger_statement,
+    QuaProgramZRotationStatement: _frame_rotation_statement,
+    QuaProgramRampToZeroStatement: _ramp_to_zero_statement,
+    QuaProgramResetFrameStatement: _reset_frame_statement,
+    ListValue: _stream_processing_terminal_statement,
     # list value statement is assumed just as stream processing for now
-    "qm.grpc.qua.QuaProgramUpdateCorrectionStatement": lambda n: f'update_correction("{n.qe.name}"'
-    f",{ExpressionSerializingVisitor.serialize(n.correction.c0)}"
-    f",{ExpressionSerializingVisitor.serialize(n.correction.c1)}"
-    f",{ExpressionSerializingVisitor.serialize(n.correction.c2)}"
-    f",{ExpressionSerializingVisitor.serialize(n.correction.c3)})",
-    "qm.grpc.qua.QuaProgramSetDcOffsetStatement": _set_dc_offset_statement,
-    "qm.grpc.qua.QuaProgramAdvanceInputStreamStatement": _advance_input_stream_statement,
-    "qm.grpc.qua.QuaProgramFastFrameRotationStatement": _fast_frame_rotation_statement,
+    QuaProgramUpdateCorrectionStatement: _update_correction_statement,
+    QuaProgramSetDcOffsetStatement: _set_dc_offset_statement,
+    QuaProgramAdvanceInputStreamStatement: _advance_input_stream_statement,
+    QuaProgramFastFrameRotationStatement: _fast_frame_rotation_statement,
 }
 
-_var_type_dec = {0: "int", 1: "bool", 2: "fixed"}
+_var_type_dec = {QuaProgramType.INT: "int", QuaProgramType.BOOL: "bool", QuaProgramType.REAL: "fixed"}
 
-_nodes_to_ignore = [
-    "qm.grpc.qua.QuaProgramScript",
-    "qm.grpc.qua.QuaProgramStatementsCollection",
-    "qm.grpc.qua.QuaProgramAnyStatement",
-    "qm.grpc.qua.QuaProgramAnyScalarExpression",
-    "qm.grpc.qua.QuaProgramBinaryExpression",
-    "qm.grpc.qua.QuaProgramVarRefExpression",
-    "qm.grpc.qua.QuaProgramLiteralExpression",
-    "qm.grpc.qua.QuaProgramPlayStatement",
-    "qm.grpc.qua_config.QuaConfig",
-]
+_nodes_to_ignore = {
+    QuaProgramScript,
+    QuaProgramStatementsCollection,
+    QuaProgramAnyStatement,
+    QuaProgramAnyScalarExpression,
+    QuaProgramBinaryExpression,
+    QuaProgramVarRefExpression,
+    QuaProgramLiteralExpression,
+    QuaProgramPlayStatement,
+    QuaConfig,
+}
 
-_dont_print = set(list(_blocks.keys()) + list(_statements.keys()) + _nodes_to_ignore)
+_dont_print = set(_blocks) | set(_statements) | _nodes_to_ignore

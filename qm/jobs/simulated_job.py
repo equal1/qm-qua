@@ -82,9 +82,11 @@ class SimulatedJob(RunningQmJob):
         capabilities: ServerCapabilities,
         store: BaseStore,
         simulated_response: SimulatedResponsePart,
+        sampling_rate: float,  # TODO: This is temporary until the GW provides the sampling rate
     ):
         super().__init__(job_id, "", frontend_api, capabilities, store)
         self._waveform_report: Optional[WaveformReport] = None
+        self._sampling_rate = sampling_rate
 
         self._simulated_analog_outputs: AnalogOutputsType = {"waveforms": None}
         self._simulated_digital_outputs: DigitalOutputsType = {"waveforms": None}
@@ -213,7 +215,7 @@ class SimulatedJob(RunningQmJob):
             writer.write(d)
 
         writer.seek(0)
-        ret: numpy.typing.NDArray[numpy.generic] = numpy.load(writer)  # type: ignore[no-untyped-call]
+        ret: numpy.typing.NDArray[numpy.generic] = numpy.load(writer)
         return ret
 
     def get_simulated_samples(self, include_analog: bool = True, include_digital: bool = True) -> SimulatorSamples:
@@ -256,7 +258,8 @@ class SimulatedJob(RunningQmJob):
             The simulated samples of the job.
         """
         return SimulatorSamples.from_np_array(
-            self._get_np_simulated_samples(include_analog=include_analog, include_digital=include_digital)
+            self._get_np_simulated_samples(include_analog=include_analog, include_digital=include_digital),
+            self._sampling_rate,
         )
 
     @property

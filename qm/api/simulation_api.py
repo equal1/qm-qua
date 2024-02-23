@@ -1,8 +1,9 @@
 import logging
-from typing import Tuple, AsyncIterator
+from typing import Tuple, Union, AsyncIterator
 
 from qm.simulate import interface
 from qm.api.base_api import BaseApi
+from qm.grpc.qua_config import QuaConfig
 from qm.utils.async_utils import run_async
 from qm.program import Program, load_config
 from qm.utils.protobuf_utils import LOG_LEVEL_MAP
@@ -37,7 +38,7 @@ class SimulationApi(BaseApi):
 
     def simulate(
         self,
-        config: DictQuaConfig,
+        config: Union[DictQuaConfig, QuaConfig],
         program: Program,
         simulate: SimulationConfig,
         compiler_options: CompilerOptionArguments,
@@ -46,10 +47,13 @@ class SimulationApi(BaseApi):
             raise Exception("program argument must be of type qm.program.Program")
 
         request = SimulationRequest()
-        msg_config = load_config(config)
+        msg_config = config if isinstance(config, QuaConfig) else load_config(config)
+        msg_config.v1_beta._unknown_fields = b""  # The above correction is for a return of an unknown fields from
+        # an old GW, that changes the flow of the config parsing (in the GW, and to a buggy one).
+        # Check a year from now (Feb/2024) if this is still necessary.
         request.config = msg_config
 
-        if type(simulate) is SimulationConfig:
+        if isinstance(simulate, SimulationConfig):
             request.simulate = ExecutionRequestSimulate(
                 duration=simulate.duration,
                 include_analog_waveforms=simulate.include_analog_waveforms,
@@ -106,7 +110,7 @@ class SimulationApi(BaseApi):
 
                 request.controller_connections.append(con)
 
-        request.high_level_program = program.build(msg_config)
+        request.high_level_program = program.qua_program
         request.high_level_program.compiler_options = _get_request_compiler_options(compiler_options)
 
         logger.info("Simulating program")
@@ -149,7 +153,7 @@ class SimulationApi(BaseApi):
             job_id=job_id,
             include_analog=include_analog,
             include_digital=include_digital,
-            include_all_connections=True,
+            include_all_connections=True,  # TODO: Check whether it should appear
         )
 
         return self._stub.pull_simulator_samples(request)

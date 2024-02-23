@@ -1,4 +1,3 @@
-from typing_extensions import SupportsIndex
 from typing import (
     Any,
     Set,
@@ -11,6 +10,7 @@ from typing import (
     Collection,
     SupportsInt,
     SupportsFloat,
+    SupportsIndex,
     cast,
 )
 

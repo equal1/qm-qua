@@ -1,19 +1,22 @@
 import re
 import logging
+import warnings
 import dataclasses
-from functools import lru_cache
 from typing import Any, Dict, List, Tuple, Union, Generic, TypeVar, Optional
 
-from octave_sdk import Octave, ClockType, OctaveOutput, ClockFrequency, OctaveLOSource
+from octave_sdk import OctaveOutput, OctaveLOSource
 
-from qm.octave.enums import ClockInfo
+from qm.utils import SERVICE_HEADER_NAME
 from qm.type_hinting.general import PathLike
 from qm.exceptions import OctaveConnectionError
+from qm.api.models.capabilities import OPX_FEM_IDX
 from qm.octave.calibration_db import CalibrationDB
+from qm.type_hinting.config_types import StandardPort
+from qm.api.models.server_details import ConnectionDetails
 
 logger = logging.getLogger(__name__)
 
-ConnectionMapping = Dict[Tuple[str, int], Tuple[str, str]]
+ConnectionMapping = Dict[StandardPort, Tuple[str, str]]
 
 DEFAULT_CONNECTIONS = {
     1: "I1",
@@ -29,16 +32,6 @@ DEFAULT_CONNECTIONS = {
 }
 
 
-@dataclasses.dataclass
-class ConnectionInfo:
-    host: str
-    port: int
-    clock_in: ClockInfo
-
-    def __hash__(self) -> int:
-        return hash((self.host, self.port, self.clock_in.clock_type, self.clock_in.frequency))
-
-
 PortType = TypeVar("PortType", OctaveOutput, OctaveLOSource)
 
 
@@ -52,58 +45,13 @@ class LoopbackInfo(Generic[PortType]):
 
 
 def _convert_octave_port_to_number(port: str) -> int:
-    if port == "I1":
-        return 1
-    elif port == "Q1":
-        return 1
-    elif port == "I2":
-        return 2
-    elif port == "Q2":
-        return 2
-    elif port == "I3":
-        return 3
-    elif port == "Q3":
-        return 3
-    elif port == "I4":
-        return 4
-    elif port == "Q4":
-        return 4
-    elif port == "I5":
-        return 5
-    elif port == "Q5":
-        return 5
-    else:
-        raise ValueError(f"Unknown port - {port}")
+    if port.startswith(tuple("IQ")) and port.endswith(tuple("12345")) and len(port) == 2:
+        return int(port[-1])
+    raise ValueError(f"port {port} is not a valid octave port")
 
 
 def _convert_number_to_octave_port(name: str, port: int) -> List[Tuple[str, str]]:
     return [(name, f"I{port}"), (name, f"Q{port}")]
-
-
-@lru_cache(maxsize=None)
-def _cached_get_device(
-    connection_info: ConnectionInfo, loop_backs: Tuple[Tuple[OctaveLOSource, OctaveOutput], ...], octave_name: str
-) -> Octave:
-    standardized_loop_backs = {input_port: output_port for input_port, output_port in loop_backs}
-    return Octave(
-        host=connection_info.host,
-        port=connection_info.port,
-        port_mapping=standardized_loop_backs,
-        octave_name=octave_name,
-    )
-
-
-def get_device(
-    connection_info: ConnectionInfo, loop_backs: Dict[OctaveLOSource, OctaveOutput], octave_name: str, fan: Any = None
-) -> Octave:
-    client = _cached_get_device(
-        connection_info,
-        loop_backs=tuple(sorted(loop_backs.items(), key=lambda u: (u[0].name, u[1].name))),
-        octave_name=octave_name,
-    )
-    if fan is not None:
-        client._set_fan(fan)
-    return client
 
 
 class QmOctaveConfig:
@@ -112,20 +60,17 @@ class QmOctaveConfig:
     """
 
     def __init__(self, fan: Any = None):
-        self._devices: Dict[str, ConnectionInfo] = {}
+        self._devices: Dict[str, ConnectionDetails] = {}
         self._calibration_db_path: Optional[str] = None
         self._loopbacks: Optional[Dict[LoopbackInfo[OctaveLOSource], LoopbackInfo[OctaveOutput]]] = None
         self._opx_octave_port_mapping: Optional[ConnectionMapping] = None
         self._calibration_db: Optional[CalibrationDB] = None
         self._fan = fan
+        self._connection_headers: Dict[str, str] = {}
 
-    def get_device(self, device_name: str) -> Octave:
-        return get_device(
-            connection_info=self._devices[device_name],
-            loop_backs=self.get_lo_loopbacks_by_octave(device_name),
-            octave_name=device_name,
-            fan=self._fan,
-        )
+    @property
+    def connection_headers(self) -> Dict[str, str]:
+        return self._connection_headers
 
     @property
     def fan(self) -> Any:
@@ -136,7 +81,6 @@ class QmOctaveConfig:
         name: str,
         host: str,
         port: int,
-        clock_in: Optional[ClockInfo] = None,
     ) -> None:
         """Sets the octave info  - the IP address can be either the router ip or the actual ip
         depends on the installation configuration (cluster or standalone mode)
@@ -147,18 +91,18 @@ class QmOctaveConfig:
             name (str): The octave name
             host (str): The octave/QOP ip
             port (int): The octave port
-            clock_in(ClockInfo): Details regarding the provided clock
         """
         # can be either the router ip or the actual ip (depends on what we have)
-        if clock_in is None:
-            clock_in = ClockInfo(ClockType.Internal, ClockFrequency.MHZ_10)
-        self._devices[name] = ConnectionInfo(host, port, clock_in)
+        self._devices[name] = ConnectionDetails(host, port, headers={SERVICE_HEADER_NAME: name})
 
-    def get_devices(self) -> Dict[str, ConnectionInfo]:
+    def add_device(self, name: str, details: ConnectionDetails) -> None:
+        self._devices[name] = details
+
+    def get_devices(self) -> Dict[str, ConnectionDetails]:
         return self._devices
 
     @property
-    def devices(self) -> Dict[str, ConnectionInfo]:
+    def devices(self) -> Dict[str, ConnectionDetails]:
         return self._devices
 
     def set_calibration_db(self, path: PathLike) -> None:
@@ -182,26 +126,24 @@ class QmOctaveConfig:
         Args:
             mappings: list of tuples of [OPX_name, octave_name] to connect
         """
-        # warnings.warn(
-        #     "OctaveConfig.set_opx_octave_mapping is deprecated as of 1.1.0 and will be removed in 1.2.0, The port mapping was moved to the config. Please set the mapping there",
-        #     DeprecationWarning,
-        #     stacklevel=2,
-        # )
+        warnings.warn(
+            "OctaveConfig.set_opx_octave_mapping is deprecated as of 1.1.6 and will be removed in 1.2.0. "
+            "The port mapping was moved to the QUA-config. Please set the mapping there.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._opx_octave_port_mapping is None:
             self._opx_octave_port_mapping = {}
 
         if self._opx_octave_port_mapping:
-            logger.warning("Setting opx-octave default port mapping, " "your configured mapping will be overridden!")
+            logger.warning("Setting a new opx-octave port mapping, your configured mapping will be overridden!")
 
         for opx_name, octave_name in mappings:
             self._opx_octave_port_mapping.update(self.get_default_opx_octave_port_mapping(opx_name, octave_name))
 
-    # @deprecated(
-    #     "1.1.0",
-    #     "1.2.0",
-    #     details="The port mapping was moved to the config. Please set the mapping there",
-    # )
-    def add_opx_octave_port_mapping(self, connections: ConnectionMapping) -> None:
+    def add_opx_octave_port_mapping(
+        self, connections: Dict[Union[StandardPort, Tuple[str, int]], Tuple[str, str]]
+    ) -> None:
         """
         Adds port mapping which is different from the default one. should be in the form:
         ```
@@ -225,22 +167,19 @@ class QmOctaveConfig:
         # ("con1", 1): ("octave1", "I1")
         # validate structure:
 
-        # warnings.warn(
-        #     deprecation_message(
-        #         "OctaveConfig().add_opx_octave_port_mapping()",
-        #         "1.1.0",
-        #         "1.2.0",
-        #         "close will be removed, please set mapping using the qua config",
-        #     ),
-        #     category=DeprecationWarning,
-        # )
+        warnings.warn(
+            "OctaveConfig.add_opx_octave_port_mapping is deprecated as of 1.1.6 and will be removed in 1.2.0. "
+            "The port mapping was moved to the QUA-config. Please set the mapping there.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         if self._opx_octave_port_mapping is None:
             self._opx_octave_port_mapping = {}
 
-        for opx_connection, octave_connection in connections.items():
-            if not (self._check_connection_format(opx_connection) and isinstance(opx_connection[1], int)):
-                raise ValueError(f"key {opx_connection} is not according to format " f'("con_name", "port_index")')
+        standardized_connections = {}
+
+        for key, octave_connection in connections.items():
             pattern = re.compile("([IQ])([12345])")
             if not (
                 self._check_connection_format(octave_connection)
@@ -250,8 +189,12 @@ class QmOctaveConfig:
                 raise ValueError(
                     f"value {octave_connection} is not according to format " f'("octave_name", "octave_port")'
                 )
-
-        self._opx_octave_port_mapping.update(connections)
+            if len(key) == 2:
+                standard_key = (key[0], OPX_FEM_IDX, key[1])
+            else:
+                standard_key = key
+            standardized_connections[standard_key] = octave_connection
+        self._opx_octave_port_mapping.update(standardized_connections)
 
     def get_opx_octave_port_mapping(self) -> ConnectionMapping:
         """Get the configured opx-octave connections
@@ -261,11 +204,13 @@ class QmOctaveConfig:
         """
         if self._opx_octave_port_mapping is None:
             return {}
-        # warnings.warn(
-        #     "Setting port mapping was moved to the config, please move your mapping there",
-        #     DeprecationWarning,
-        #     stacklevel=2,
-        # )
+        warnings.warn(
+            "Setting the mapping was move to the QUA-config. "
+            "It is deprecated since 1.1.6 and will be removed in 1.2.0."
+            "Please set the mapping there.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._opx_octave_port_mapping
 
     @staticmethod
@@ -282,10 +227,7 @@ class QmOctaveConfig:
         """
         default_connections = {}
         for opx_port, octave_port in DEFAULT_CONNECTIONS.items():
-            default_connections[(controller_name, opx_port)] = (
-                octave_name,
-                octave_port,
-            )
+            default_connections[(controller_name, OPX_FEM_IDX, opx_port)] = (octave_name, octave_port)
         return default_connections
 
     @property
@@ -309,10 +251,12 @@ class QmOctaveConfig:
             octave_input_port (OctaveLOSource): the LO input port
                 according to OctaveLOSource
         """
-        # warnings.warn(
-        #     deprecation_message("OctaveConfig().add_lo_loopback()", "1.1.0", "1.2.0", "close will be removed."),
-        #     category=DeprecationWarning,
-        # )
+        warnings.warn(
+            "OctaveConfig.add_lo_loopback is deprecated as of 1.1.6 and will be removed in 1.2.0. "
+            "Please set the loopbacks there.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._loopbacks is None:
             self._loopbacks = {}
 
@@ -335,19 +279,18 @@ class QmOctaveConfig:
         if self._loopbacks is None:
             return {}
 
-        # warnings.warn(
-        #     "Loopbacks were moved to the qua-config, move them there",
-        #     DeprecationWarning,
-        #     stacklevel=2,
-        # )
-
+        warnings.warn(
+            "Loopbacks were moved to the QUA-config, move them there",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         result = {}
         for destination, source in self._loopbacks.items():
             if destination.name == octave_name:
                 result[destination.octave_port] = source.octave_port
         return result
 
-    def get_opx_iq_ports(self, octave_output_port: Tuple[str, int]) -> Tuple[Tuple[str, int], Tuple[str, int]]:
+    def get_opx_iq_ports(self, octave_output_port: Tuple[str, int]) -> Tuple[StandardPort, StandardPort]:
         conns = self.get_opx_octave_port_mapping()
         inv_conns = {v: k for k, v in conns.items()}
         octave_input_port_i, octave_input_port_q = _convert_number_to_octave_port(
@@ -364,8 +307,8 @@ class QmOctaveConfig:
 
     def get_octave_input_port(
         self,
-        opx_i_port: Tuple[str, int],
-        opx_q_port: Tuple[str, int],
+        opx_i_port: StandardPort,
+        opx_q_port: StandardPort,
     ) -> Optional[Tuple[str, int]]:
         # check both ports are going to the same mixer
         connections = self.get_opx_octave_port_mapping()
@@ -379,7 +322,8 @@ class QmOctaveConfig:
             raise OctaveConnectionError("I port is not connected to any octave and Q port is connected to an octave")
         if i_octave_port is not None and q_octave_port is None:
             raise OctaveConnectionError("Q port is not connected to any octave and I port is connected to an octave")
-        assert i_octave_port is not None and q_octave_port is not None
+        assert i_octave_port is not None
+        assert q_octave_port is not None
         if i_octave_port[0] != q_octave_port[0]:
             raise OctaveConnectionError("I and Q are not connected to the same octave")
         if i_octave_port[1][-1] != q_octave_port[1][-1]:
